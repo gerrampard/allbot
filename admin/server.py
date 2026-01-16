@@ -41,6 +41,15 @@ from itsdangerous import URLSafeSerializer
 from functools import wraps
 import websockets
 
+# 导入更新进度管理器
+try:
+    from update_manager import update_progress_manager
+    from update_with_progress import update_with_progress
+    has_update_manager = True
+except ImportError:
+    has_update_manager = False
+    logger.warning("更新进度管理器导入失败，更新进度推送功能将不可用")
+
 # 导入API管理中心
 try:
     from api_manager import APIManagerDB, get_api_proxy, api_manager_router
@@ -1974,136 +1983,27 @@ def setup_routes():
             if not version_info.get("update_available", False):
                 return {"success": False, "error": "没有可用的更新"}
 
-            # 创建临时目录
-            import tempfile
-            import shutil
-            import zipfile
-            import io
+            # 检查更新进度管理器是否可用
+            if not has_update_manager:
+                logger.error("更新进度管理器不可用，无法执行更新")
+                return {"success": False, "error": "更新进度管理器不可用，请检查 update_manager.py 和 update_with_progress.py 文件"}
 
-            temp_dir = tempfile.mkdtemp(prefix="allbot_update_")
-            logger.info(f"创建临时目录: {temp_dir}")
-
-            try:
-                # 构建ZIP下载链接
-                zip_url = get_github_url("https://github.com/sxkiss/allbot/archive/refs/heads/main.zip")
-                logger.info(f"正在从 {zip_url} 下载最新代码...")
-
-                # 下载ZIP文件
+            # 启动带进度的更新流程
+            async def run_update():
                 try:
-                    response = requests.get(zip_url, timeout=30)
-                    if response.status_code != 200:
-                        return {"success": False, "error": f"下载更新失败: HTTP {response.status_code}"}
+                    await update_with_progress(version_info, update_progress_manager, get_github_url, current_dir)
+                    # 更新完成后等待3秒再重启
+                    await asyncio.sleep(3)
+                    await restart_server()
                 except Exception as e:
-                    logger.error(f"下载更新失败: {str(e)}")
-                    return {"success": False, "error": f"下载更新失败: {str(e)}"}
+                    logger.error(f"更新流程执行失败: {e}")
 
-                # 解压ZIP文件到临时目录
-                z = zipfile.ZipFile(io.BytesIO(response.content))
-                z.extractall(temp_dir)
-                logger.info(f"已解压文件到临时目录: {temp_dir}")
+            asyncio.create_task(run_update())
 
-                # 获取解压后的目录名称
-                extracted_dir = None
-                for item in os.listdir(temp_dir):
-                    item_path = os.path.join(temp_dir, item)
-                    if os.path.isdir(item_path):
-                        extracted_dir = item_path
-                        break
-
-                if not extracted_dir:
-                    return {"success": False, "error": "解压后未找到有效目录"}
-
-                logger.info(f"找到解压后的目录: {extracted_dir}")
-
-                # 获取项目根目录
-                root_dir = os.path.dirname(current_dir)
-                logger.info(f"项目根目录: {root_dir}")
-
-                # 需要更新的文件和目录列表
-                update_items = [
-                    "admin",
-                    "WechatAPI",
-                    "utils",
-                    "dow/channel",
-                    "dow/lib",
-                    "version.json",
-                    "bot_core.py",
-                    "main_config.toml.example",
-                    "main.py"
-                ]
-
-                # 备份当前版本的文件
-                backup_dir = os.path.join(root_dir, "backup_" + datetime.now().strftime("%Y%m%d%H%M%S"))
-                os.makedirs(backup_dir, exist_ok=True)
-                logger.info(f"创建备份目录: {backup_dir}")
-
-                # 备份并更新文件
-                for item in update_items:
-                    src_path = os.path.join(root_dir, item)
-                    if os.path.exists(src_path):
-                        # 备份文件
-                        backup_path = os.path.join(backup_dir, item)
-                        if os.path.isdir(src_path):
-                            shutil.copytree(src_path, backup_path)
-                            logger.info(f"已备份目录: {item} 到 {backup_path}")
-                        else:
-                            # 确保目标目录存在
-                            os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-                            shutil.copy2(src_path, backup_path)
-                            logger.info(f"已备份文件: {item} 到 {backup_path}")
-
-                    # 从下载的文件中复制新版本
-                    new_src_path = os.path.join(extracted_dir, item)
-                    if os.path.exists(new_src_path):
-                        dst_path = os.path.join(root_dir, item)
-
-                        # 如果目标是目录，先删除它
-                        if os.path.isdir(dst_path):
-                            shutil.rmtree(dst_path)
-                        elif os.path.exists(dst_path):
-                            os.remove(dst_path)
-
-                        # 复制新文件
-                        if os.path.isdir(new_src_path):
-                            shutil.copytree(new_src_path, dst_path)
-                            logger.info(f"已更新目录: {item}")
-                        else:
-                            shutil.copy2(new_src_path, dst_path)
-                            logger.info(f"已更新文件: {item}")
-                    else:
-                        logger.warning(f"在下载的文件中未找到: {item}")
-
-                # 更新版本信息
-                version_info["version"] = version_info["latest_version"]
-                version_info["update_available"] = False
-                version_info["force_update"] = False
-                version_info["last_check"] = datetime.now().isoformat()
-
-                version_file = os.path.join(root_dir, "version.json")
-                with open(version_file, "w", encoding="utf-8") as f:
-                    json.dump(version_info, f, ensure_ascii=False, indent=2)
-
-                logger.info(f"更新版本信息文件成功: {version_file}")
-
-                # 清理临时目录
-                shutil.rmtree(temp_dir)
-                logger.info(f"已清理临时目录: {temp_dir}")
-
-                # 创建一个后台任务来重启服务
-                asyncio.create_task(restart_server())
-
-                return {
-                    "success": True,
-                    "message": "更新成功，系统将在10秒后自动重启...",
-                    "version": version_info["version"]
-                }
-
-            except Exception as e:
-                logger.error(f"更新过程中出错: {str(e)}")
-                # 清理临时目录
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                return {"success": False, "error": f"更新失败: {str(e)}"}
+            return {
+                "success": True,
+                "message": "更新任务已启动，请通过WebSocket监听进度"
+            }
         except Exception as e:
             logger.error(f"版本更新失败: {str(e)}")
             return {"success": False, "error": f"版本更新失败: {str(e)}"}
@@ -3614,6 +3514,48 @@ except:
                 await websocket.send_text(f"已收到: {data}")
         except WebSocketDisconnect:
             await disconnect_websocket(websocket)
+
+    # WebSocket更新进度推送端点
+    @app.websocket("/ws/update-progress")
+    async def update_progress_websocket(websocket: WebSocket):
+        """WebSocket端点 - 实时推送版本更新进度"""
+        await websocket.accept()
+
+        if not has_update_manager:
+            await websocket.send_text(json.dumps({
+                "error": "更新进度管理器不可用"
+            }))
+            await websocket.close()
+            return
+
+        # 创建消息队列
+        queue = asyncio.Queue()
+
+        try:
+            # 注册连接
+            await update_progress_manager.add_connection(queue)
+            logger.info("新的更新进度WebSocket连接已建立")
+
+            # 持续推送进度更新
+            while True:
+                try:
+                    # 从队列获取更新消息
+                    message = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    await websocket.send_text(message)
+                except asyncio.TimeoutError:
+                    # 发送心跳保持连接
+                    await websocket.send_text(json.dumps({"type": "heartbeat"}))
+                except Exception as e:
+                    logger.error(f"发送更新进度失败: {e}")
+                    break
+
+        except WebSocketDisconnect:
+            logger.info("更新进度WebSocket连接断开")
+        except Exception as e:
+            logger.error(f"更新进度WebSocket错误: {e}")
+        finally:
+            # 移除连接
+            await update_progress_manager.remove_connection(queue)
 
     @app.route('/qrcode')
     async def page_qrcode(request):

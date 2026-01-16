@@ -51,6 +51,9 @@ class DependencyManager(PluginBase):
         # 加载配置
         self.load_config()
         
+        # 加载主配置中的 GitHub 反代设置
+        self.load_github_proxy()
+        
         logger.critical(f"[DependencyManager] 插件初始化完成, 启用状态: {self.enable}, 优先级: 80")
         
     def load_config(self):
@@ -94,6 +97,50 @@ class DependencyManager(PluginBase):
             self.list_cmd = "!pip list"
             self.uninstall_cmd = "!pip uninstall"
             self.github_install_prefix = "github"
+    
+    def load_github_proxy(self):
+        """加载主配置中的 GitHub 反代设置"""
+        try:
+            with open("main_config.toml", "rb") as f:
+                main_config = tomllib.load(f)
+            
+            # 读取 github-proxy 配置
+            self.github_proxy = main_config.get("XYBot", {}).get("github-proxy", "")
+            
+            logger.critical(f"[DependencyManager] GitHub反代地址: '{self.github_proxy}'")
+            
+            if self.github_proxy and not self.github_proxy.endswith("/"):
+                # 确保反代地址以 / 结尾
+                self.github_proxy = self.github_proxy + "/"
+                logger.warning(f"[DependencyManager] GitHub反代地址已自动添加结尾斜杠: '{self.github_proxy}'")
+                
+        except Exception as e:
+            logger.error(f"[DependencyManager] 加载主配置失败: {str(e)}")
+            self.github_proxy = ""
+    
+    def _build_github_url(self, github_url: str) -> str:
+        """
+        构建带反代的 GitHub URL
+        
+        Args:
+            github_url: 原始 GitHub URL (例如: https://github.com/user/repo)
+        
+        Returns:
+            带反代的 URL 或原始 URL
+        """
+        if not self.github_proxy:
+            # 没有配置反代，直接返回原始 URL
+            return github_url
+        
+        # 如果 URL 已经包含反代，直接返回
+        if self.github_proxy in github_url:
+            return github_url
+        
+        # 构建带反代的 URL
+        # 格式: {proxy}{original_url}
+        proxied_url = f"{self.github_proxy}{github_url}"
+        logger.debug(f"[DependencyManager] 构建反代URL: {github_url} -> {proxied_url}")
+        return proxied_url
     
     @on_text_message(priority=80)
     async def handle_text_message(self, bot: WechatAPIClient, message: dict):
@@ -412,9 +459,10 @@ class DependencyManager(PluginBase):
                 
                 if git_installed:
                     # 使用git克隆仓库
-                    logger.info(f"[DependencyManager] 使用git克隆: {github_url}.git 到 {temp_dir}")
+                    clone_url = self._build_github_url(f"{github_url}.git")
+                    logger.info(f"[DependencyManager] 使用git克隆: {clone_url} 到 {temp_dir}")
                     process = subprocess.Popen(
-                        ["git", "clone", f"https://github.whrstudio.top/{github_url}.git", temp_dir],
+                        ["git", "clone", clone_url, temp_dir],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True
@@ -478,17 +526,19 @@ class DependencyManager(PluginBase):
         """使用requests下载GitHub仓库的ZIP文件"""
         try:
             # 构建ZIP下载链接
-            zip_url = f"https://github.whrstudio.top/https://github.com/{user_name}/{repo_name}/archive/refs/heads/main.zip"
+            original_zip_url = f"https://github.com/{user_name}/{repo_name}/archive/refs/heads/main.zip"
+            zip_url = self._build_github_url(original_zip_url)
             logger.critical(f"[DependencyManager] 开始下载ZIP: {zip_url}")
             
             # 发送下载状态
-            await bot.send_text_message(chat_id, f"📥 正在从GitHub下载ZIP文件: {zip_url}")
+            await bot.send_text_message(chat_id, f"📥 正在从GitHub下载ZIP文件...")
             
             # 下载ZIP文件
             response = requests.get(zip_url, timeout=30)
             if response.status_code != 200:
                 # 尝试使用master分支
-                zip_url = f"https://github.whrstudio.top/https://github.com/{user_name}/{repo_name}/archive/refs/heads/master.zip"
+                original_zip_url = f"https://github.com/{user_name}/{repo_name}/archive/refs/heads/master.zip"
+                zip_url = self._build_github_url(original_zip_url)
                 logger.critical(f"[DependencyManager] 尝试下载master分支: {zip_url}")
                 response = requests.get(zip_url, timeout=30)
                 

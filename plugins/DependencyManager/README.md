@@ -18,6 +18,34 @@
 
 ## 📋 使用指南
 
+## 📋 使用指南
+
+### 从 GitHub 安装插件
+
+使用 github 唤醒词安装（必需）：
+
+```
+github https://github.com/sxkiss/allbot.git
+```
+
+或使用简化格式：
+
+```
+github sxkiss/allbot
+```
+
+快捷命令安装插件：
+
+```
+github allbot
+```
+
+获取 GitHub 安装帮助：
+
+```
+github help
+```
+
 ### 安装包
 
 安装最新版本的包：
@@ -30,58 +58,6 @@
 
 ```
 !pip install 包名==1.2.3
-```
-
-### 查询包信息
-
-查看已安装包的详细信息：
-
-```
-!pip show 包名
-```
-
-### 列出所有已安装的包
-
-```
-!pip list
-```
-
-### 卸载包
-
-```
-!pip uninstall 包名
-```
-
-### 检查包是否可以导入
-
-```
-!import 包名
-```
-
-### 从 GitHub 安装插件
-
-使用 github 唤醒词安装（必需）：
-
-```
-github https://github.com/用户名/插件名.git
-```
-
-或使用简化格式：
-
-```
-github 用户名/插件名
-```
-
-快捷命令安装 GeminiImage 插件：
-
-```
-github gemini
-```
-
-获取 GitHub 安装帮助：
-
-```
-github help
 ```
 
 ### 获取帮助

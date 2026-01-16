@@ -203,7 +203,7 @@ class NotificationService:
                         color: #666; font-size: 14px;">
                 系统自动通知
                 <div style="margin-top: 10px; font-size: 12px;">
-                    项目名称：<a href="https://github.com/NanSsye/allbot-pad/" style="color: #666; text-decoration: underline;">allbot-pad</a>
+                    项目名称：<a href="https://github.com/sxkiss/allbot/" style="color: #666; text-decoration: underline;">allbot</a>
                 </div>
             </div>
         </div>
@@ -253,7 +253,7 @@ class NotificationService:
                         color: #666; font-size: 14px;">
                 系统自动通知
                 <div style="margin-top: 10px; font-size: 12px;">
-                    项目名称：<a href="https://github.com/NanSsye/allbot-pad/" style="color: #666; text-decoration: underline;">allbot-pad</a>
+                    项目名称：<a href="https://github.com/sxkiss/allbot/" style="color: #666; text-decoration: underline;">allbot</a>
                 </div>
             </div>
         </div>
@@ -303,7 +303,7 @@ class NotificationService:
                         color: #666; font-size: 14px;">
                 系统自动通知
                 <div style="margin-top: 10px; font-size: 12px;">
-                    项目名称：<a href="https://github.com/NanSsye/allbot-pad/" style="color: #666; text-decoration: underline;">allbot-pad</a>
+                    项目名称：<a href="https://github.com/sxkiss/allbot/" style="color: #666; text-decoration: underline;">allbot</a>
                 </div>
             </div>
         </div>
@@ -355,7 +355,7 @@ class NotificationService:
                         color: #666; font-size: 14px;">
                 系统自动通知
                 <div style="margin-top: 10px; font-size: 12px;">
-                    项目名称：<a href="https://github.com/NanSsye/allbot-pad/" style="color: #666; text-decoration: underline;">allbot-pad</a>
+                    项目名称：<a href="https://github.com/sxkiss/allbot/" style="color: #666; text-decoration: underline;">allbot</a>
                 </div>
             </div>
         </div>
@@ -394,7 +394,7 @@ class NotificationService:
                         color: #666; font-size: 14px;">
                 系统自动通知
                 <div style="margin-top: 10px; font-size: 12px;">
-                    项目名称：<a href="https://github.com/NanSsye/allbot-pad/" style="color: #666; text-decoration: underline;">allbot-pad</a>
+                    项目名称：<a href="https://github.com/sxkiss/allbot/" style="color: #666; text-decoration: underline;">allbot</a>
                 </div>
             </div>
         </div>

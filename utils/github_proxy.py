@@ -46,7 +46,7 @@ def check_github_proxy(proxy_url: str) -> bool:
 
     try:
         # 构建测试URL - 使用一个小文件进行测试
-        test_url = f"{proxy_url}https://raw.githubusercontent.com/NanSsye/allbot-pad/main/version.json"
+        test_url = f"{proxy_url}https://raw.githubusercontent.com/sxkiss/allbot/refs/heads/main/version.json"
 
         # 设置较短的超时时间
         response = requests.get(test_url, timeout=5)

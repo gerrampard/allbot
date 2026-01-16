@@ -46,9 +46,9 @@ def convert_markdown_to_html(markdown_content):
         html_content = html_content.replace('\n', '<br>')
     
     # 将Markdown中的相对路径转换为Web应用可访问的路径
-    # 将 src="admin/static/ 替换为 src="/static/
-    # 将 href="admin/static/ 替换为 href="/static/
-    html_content = re.sub(r'(src|href)="admin/static/', r'\1="/static/', html_content)
+    # 将 src="admin/static/ 替换为 src="/admin/static/
+    # 将 href="admin/static/ 替换为 href="/admin/static/
+    html_content = re.sub(r'(src|href)="admin/static/', r'\1="/admin/static/', html_content)
     
     return html_content
 

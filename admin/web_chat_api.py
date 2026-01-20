@@ -5,10 +5,12 @@ import os
 import re
 import time
 import uuid
+import asyncio
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
+from collections import deque
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from loguru import logger
@@ -20,6 +22,9 @@ web_sessions: Dict[str, Dict[str, Any]] = {}
 _sender_index: Dict[str, str] = {}
 _media_index: Dict[str, Dict[str, Any]] = {}
 _check_auth = None
+
+# WebSocket 连接管理
+_websocket_connections: List[WebSocket] = []
 
 _MEDIA_DIR = Path(__file__).resolve().parent.parent / "temp" / "webchat_media"
 
@@ -175,12 +180,23 @@ def _normalize_reply_message(reply: Dict[str, Any]) -> Dict[str, Any]:
     msg_type = reply.get("msg_type", "text")
     ts = int(reply.get("timestamp") or time.time())
 
+    # 记录原始回复消息用于调试
+    logger.debug(f"正在规范化回复消息: msg_type={msg_type}, reply={reply}")
+
     if msg_type == "text":
         content_data = reply.get("content", {})
+        text_content = content_data.get("text", "")
+
+        # 如果 content 是字符串而不是字典，直接使用
+        if isinstance(reply.get("content"), str):
+            text_content = reply.get("content")
+
+        logger.debug(f"文本消息内容: {text_content}")
+
         return {
             "role": "bot",
             "type": "text",
-            "content": content_data.get("text", ""),
+            "content": text_content,
             "timestamp": ts,
         }
 
@@ -238,10 +254,13 @@ def _normalize_reply_message(reply: Dict[str, Any]) -> Dict[str, Any]:
 def _ingest_pending_replies(adapter, limit: int = 50) -> int:
     """从回复队列消费消息并回写到会话内存中"""
     if not adapter or not getattr(adapter, "enabled", False):
+        logger.debug("适配器未启用或不存在")
         return 0
 
     try:
         replies = adapter.pop_replies(limit=limit)
+        if replies:
+            logger.info(f"📨 从回复队列获取到 {len(replies)} 条消息")
     except Exception as e:
         logger.error(f"消费Web回复队列失败: {e}")
         return 0
@@ -249,20 +268,48 @@ def _ingest_pending_replies(adapter, limit: int = 50) -> int:
     if not replies:
         return 0
 
+    logger.info(f"🔍 当前 _sender_index: {_sender_index}")
+    logger.info(f"🔍 当前 web_sessions: {list(web_sessions.keys())}")
+
     appended = 0
     for reply in replies:
         wxid = reply.get("wxid")
+        logger.info(f"🔍 处理回复消息: wxid={wxid}, reply={reply}")
+
         if not wxid:
-            continue
-        session_id = _sender_index.get(wxid)
-        if not session_id:
-            continue
-        session = web_sessions.get(session_id)
-        if not session:
+            logger.warning(f"⚠️  回复消息缺少 wxid 字段: {reply}")
             continue
 
-        session["messages"].append(_normalize_reply_message(reply))
+        session_id = _sender_index.get(wxid)
+        if not session_id:
+            logger.error(f"❌ 未找到 wxid={wxid} 对应的会话ID")
+            logger.error(f"   _sender_index 内容: {_sender_index}")
+            logger.error(f"   尝试使用固定会话 ID: {_FIXED_SESSION_ID}")
+            # 尝试使用固定会话 ID
+            session_id = _FIXED_SESSION_ID
+
+        session = web_sessions.get(session_id)
+        if not session:
+            logger.error(f"❌ 未找到会话 session_id={session_id}")
+            logger.error(f"   web_sessions 内容: {list(web_sessions.keys())}")
+            continue
+
+        normalized_msg = _normalize_reply_message(reply)
+        session["messages"].append(normalized_msg)
         appended += 1
+        logger.success(f"✅ 成功添加回复消息到会话 {session_id}: {normalized_msg.get('content', '')[:50]}")
+
+        # 通过 WebSocket 广播新消息
+        asyncio.create_task(_broadcast_message({
+            "type": "new_message",
+            "session_id": session_id,
+            "message": normalized_msg
+        }))
+
+    if appended > 0:
+        logger.success(f"🎉 共添加 {appended} 条回复消息到会话")
+    else:
+        logger.warning(f"⚠️  处理了 {len(replies)} 条回复，但没有成功添加任何消息")
 
     return appended
 
@@ -532,6 +579,86 @@ async def get_session_messages(request: Request, session_id: str):
     except Exception as e:
         logger.error(f"获取会话消息失败: {e}")
         return JSONResponse({"success": False, "error": str(e)})
+
+
+@router.get("/debug")
+async def debug_webchat_state(request: Request):
+    """调试端点：查看 Web 对话内部状态"""
+    try:
+        await _require_auth(request)
+
+        adapter = _get_web_adapter()
+
+        return JSONResponse({
+            "success": True,
+            "data": {
+                "adapter_enabled": adapter.enabled if adapter else False,
+                "adapter_platform": adapter.platform if adapter else None,
+                "adapter_bot_identity": adapter.bot_identity if adapter else None,
+                "web_sessions": {k: {"created_at": v["created_at"], "message_count": len(v["messages"]), "sender_wxid": v["sender_wxid"]} for k, v in web_sessions.items()},
+                "sender_index": _sender_index,
+                "fixed_session_id": _FIXED_SESSION_ID,
+                "websocket_connections": len(_websocket_connections),
+            }
+        })
+    except Exception as e:
+        logger.error(f"获取调试信息失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)})
+
+
+async def _broadcast_message(message: Dict[str, Any]):
+    """广播消息到所有 WebSocket 连接"""
+    if not _websocket_connections:
+        return
+
+    import json
+    message_json = json.dumps(message, ensure_ascii=False)
+
+    # 移除断开的连接
+    disconnected = []
+    for ws in _websocket_connections:
+        try:
+            await ws.send_text(message_json)
+        except Exception as e:
+            logger.warning(f"WebSocket 发送失败: {e}")
+            disconnected.append(ws)
+
+    for ws in disconnected:
+        _websocket_connections.remove(ws)
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket 端点 - 实时推送消息"""
+    await websocket.accept()
+    _websocket_connections.append(websocket)
+    logger.info(f"新的 WebSocket 连接，当前连接数: {len(_websocket_connections)}")
+
+    try:
+        # 发送欢迎消息
+        await websocket.send_json({
+            "type": "connected",
+            "message": "WebSocket 连接成功"
+        })
+
+        # 保持连接并处理心跳
+        while True:
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # 处理客户端消息（如心跳）
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except asyncio.TimeoutError:
+                # 发送心跳
+                await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        logger.info("WebSocket 连接断开")
+    except Exception as e:
+        logger.error(f"WebSocket 错误: {e}")
+    finally:
+        if websocket in _websocket_connections:
+            _websocket_connections.remove(websocket)
+        logger.info(f"WebSocket 连接已移除，当前连接数: {len(_websocket_connections)}")
 
 
 def register_web_chat_routes(app, check_auth):

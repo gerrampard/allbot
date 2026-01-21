@@ -124,7 +124,7 @@ async def update_framework() -> Dict[str, str]:
 
     说明：
     - 为避免覆盖用户配置，默认不更新 `main_config.toml`。
-    - `plugins/` 和 `adapter/` 目录会增量更新（包括配置文件）。
+    - `plugins/` 目录不会被更新，保护用户自定义插件。
     - 更新完成会在项目根目录生成 `backup_YYYYmmddHHMMSS/` 备份目录。
     """
     async with _update_lock:
@@ -142,13 +142,18 @@ async def update_framework() -> Dict[str, str]:
             "admin",
             "WechatAPI",
             "utils",
-            "dow/channel",
-            "dow/lib",
             "adapter",
+            "bot_core",
+            "database",
             "version.json",
-            "bot_core.py",
-            "main_config.toml.example",
+            "main_config.template.toml",
             "main.py",
+            "requirements.txt",
+            "pyproject.toml",
+            "Dockerfile",
+            "docker-compose.yml",
+            "entrypoint.sh",
+            "redis.conf",
         ]
 
         try:

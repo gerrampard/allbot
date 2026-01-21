@@ -101,7 +101,7 @@ def get_bot_instance():
     """获取 bot 实例"""
     global bot_instance
     if bot_instance is None:
-        logger.warning("bot 实例未设置")
+        logger.debug("bot 实例未设置（可能处于启动阶段）")
     return bot_instance
 
 

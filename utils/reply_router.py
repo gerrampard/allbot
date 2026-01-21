@@ -127,10 +127,16 @@ class ReplyRouter:
         return await self._push(payload)
 
     async def _push(self, payload: Dict[str, Any]):
+        from loguru import logger
         payload["timestamp"] = int(time.time())
-        await self.redis.rpush(
-            self.queue_name, json.dumps(payload, ensure_ascii=False)
-        )
+        payload_str = json.dumps(payload, ensure_ascii=False)
+        logger.info(f"[ReplyRouter] 推送消息到队列 {self.queue_name}: platform={payload.get('platform')}, wxid={payload.get('wxid')}, msg_type={payload.get('msg_type')}")
+        try:
+            await self.redis.rpush(self.queue_name, payload_str)
+            logger.success(f"[ReplyRouter] 消息已成功推送到队列 {self.queue_name}")
+        except Exception as e:
+            logger.error(f"[ReplyRouter] 推送消息到队列失败: {e}")
+            raise
         return self._build_result()
 
     @staticmethod

@@ -8,6 +8,7 @@ services:
       - "9090:9090" # 管理后台端口
     volumes:
       - ./plugins:/app/plugins # 只挂载插件目录到当前目录
+      - ./logs:/app/logs # 挂载日志目录到当前目录
       - redis_data:/data/redis # Redis数据持久化
 
 volumes:

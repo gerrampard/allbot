@@ -138,8 +138,8 @@ def register_refactored_routes(app, templates, bot_instance, get_version_info,
     # 7. 注册其他功能路由（认证、通知、提醒、WebSocket等）
     try:
         from .misc import register_misc_routes
-        # 从 core.app_setup 导入正确的 config
-        from core.app_setup import config
+        # 从 admin.core.app_setup 导入正确的 config
+        from admin.core.app_setup import config
         # 从 app.state 获取更新管理器（已在 init_app_state 中注入）
         update_progress_manager = app.state.update_progress_manager
         has_update_manager = update_progress_manager is not None

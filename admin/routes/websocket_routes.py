@@ -16,7 +16,7 @@ def register_websocket_routes(app):
     Args:
         app: FastAPI 应用实例
     """
-    from core.app_setup import connect_websocket, disconnect_websocket
+    from admin.core.app_setup import connect_websocket, disconnect_websocket
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

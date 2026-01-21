@@ -15,7 +15,7 @@ def register_qrcode_routes(app, templates):
         app: FastAPI 应用实例
         templates: Jinja2 模板实例
     """
-    from core.app_setup import get_version_info
+    from admin.core.app_setup import get_version_info
 
     @app.route('/qrcode')
     async def page_qrcode(request: Request):

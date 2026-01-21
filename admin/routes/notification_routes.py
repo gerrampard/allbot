@@ -25,7 +25,7 @@ def register_notification_routes(app, templates):
         templates: Jinja2 模板实例
     """
     from admin.utils import require_auth, require_auth_page
-    from core.app_setup import get_version_info
+    from admin.core.app_setup import get_version_info
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -163,7 +163,7 @@ def register_notification_routes(app, templates):
     async def api_send_test_notification(request: Request, username: str = Depends(require_auth)):
         """API: 发送测试通知"""
         try:
-            from core.app_setup import get_bot_status
+            from admin.core.app_setup import get_bot_status
             bot_status = get_bot_status()
             wxid = bot_status.get("wxid", "")
 

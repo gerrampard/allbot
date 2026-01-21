@@ -25,16 +25,12 @@ def register_version_routes(app, get_version_info, current_dir,
         has_update_manager: 是否有更新管理器
     """
     from admin.utils import require_auth
+    from utils.github_proxy import get_github_url
 
     # 插件市场API配置
     PLUGIN_MARKET_API = {
         "BASE_URL": "http://v.sxkiss.top"
     }
-
-    def get_github_url(url):
-        """GitHub URL 加速转换"""
-        # 可以添加 GitHub 加速镜像逻辑
-        return url
 
     @app.post("/api/version/check", response_class=JSONResponse, tags=["系统"])
     async def api_version_check(request: Request):

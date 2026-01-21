@@ -277,8 +277,8 @@ async def main():
     # 启动管理后台（提前启动）
     admin_server_thread = start_admin_server(config)
 
-    # 启动适配器
-    adapter_infos = start_adapters(script_dir)
+    # 注意：适配器将在 bot_core() 初始化完成后启动
+    # 避免"机器人实例未初始化"错误
 
     # 启动 linuxService - 现在已经在entrypoint.sh中启动
     # try:
@@ -346,6 +346,11 @@ async def main():
             # 运行机器人核心
             bot = await bot_core()
 
+            # 在 bot 初始化完成后启动适配器
+            logger.info("🔌 开始启动适配器...")
+            adapter_infos = start_adapters(script_dir)
+            logger.success(f"✅ 已启动 {len(adapter_infos)} 个适配器")
+
             # 保持程序运行
             while True:
                 await asyncio.sleep(1)
@@ -370,6 +375,11 @@ async def main():
         try:
             # 运行机器人核心
             bot = await bot_core()
+
+            # 在 bot 初始化完成后启动适配器
+            logger.info("🔌 开始启动适配器...")
+            adapter_infos = start_adapters(script_dir)
+            logger.success(f"✅ 已启动 {len(adapter_infos)} 个适配器")
 
             # 保持程序运行
             while True:

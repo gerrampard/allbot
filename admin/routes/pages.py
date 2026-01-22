@@ -264,14 +264,4 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
 
 
     # 通知设置页面
-    @app.get("/notification", response_class=HTMLResponse, tags=["页面"])
-    async def notification_page(request: Request, username: Optional[str] = Depends(require_auth_page)):
-        """通知设置页面"""
-        if not username:
-            return RedirectResponse(url="/login")
-
-        version_info = get_version_info()
-        context = build_page_context(request, "notification", version_info)
-        return templates.TemplateResponse("notification.html", context)
-
     logger.info("页面路由注册完成")

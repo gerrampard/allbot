@@ -29,7 +29,6 @@ def register_misc_routes(app, templates, bot_instance, config,
     from .websocket_routes import register_websocket_routes
     from .qrcode_routes import register_qrcode_routes
     from .notification_routes import register_notification_routes
-    from .reminder_routes import register_reminder_routes
     from .terminal_routes import register_terminal_routes
 
     # 注册各个功能域的路由
@@ -37,7 +36,6 @@ def register_misc_routes(app, templates, bot_instance, config,
     register_websocket_routes(app)  # 已更新：从 app.state 获取依赖
     register_qrcode_routes(app, templates)
     register_notification_routes(app, templates)
-    register_reminder_routes(app)
     register_terminal_routes(app)
 
     # 保留依赖管理功能（未拆分）

@@ -92,10 +92,6 @@ def start_server(host_arg=None, port_arg=None, username_arg=None, password_arg=N
     logger.info("创建 FastAPI 应用实例...")
     app = create_app()
 
-    # 注册路由
-    logger.info("注册路由...")
-    setup_routes()
-
     # 日志记录所有已注册的路由
     logger.info("已注册的路由列表:")
     for route in app.routes:
@@ -149,60 +145,7 @@ def setup_routes():
 
     这个函数使用新的模块化路由注册方式。
     """
-    global app
-
-    # 从 core.app_setup 获取 templates（在 create_app() 后已初始化）
-    from admin.core import app_setup
-    templates = app_setup.templates
-
-    # 导入辅助函数（从 core.helpers 模块）
-    try:
-        from admin.core.helpers import (
-            get_system_info,
-            get_system_status,
-            update_bot_status,
-            restart_system
-        )
-        from admin.core.app_setup import get_version_info
-        from admin.system_stats_api import handle_system_stats
-
-        logger.info("✓ 辅助函数导入成功")
-    except ImportError as e:
-        logger.error(f"✗ 导入辅助函数失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        # 使用简化版本
-        from admin.core.app_setup import get_version_info
-        get_system_info = None
-        get_system_status = None
-        handle_system_stats = None
-        update_bot_status = None
-        restart_system = None
-
-    # 获取 bot 实例
-    bot_instance = get_bot_instance()
-
-    # 注册重构后的模块化路由
-    try:
-        from admin.routes import register_refactored_routes
-        register_refactored_routes(
-            app,
-            templates,
-            bot_instance,
-            get_version_info,
-            get_system_info,
-            get_system_status,
-            handle_system_stats,
-            current_dir
-        )
-        logger.info("✓ 重构后的路由注册成功")
-    except Exception as e:
-        logger.error(f"✗ 重构后的路由注册失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-    # 注册外部 API 模块（这些已经是独立文件）
-    register_external_apis(update_bot_status, restart_system)
+    logger.warning("setup_routes 已废弃：路由已在 create_app() 中通过 admin.routes.registry 统一注册")
 
 
 def register_external_apis(update_bot_status=None, restart_system=None):
@@ -213,8 +156,8 @@ def register_external_apis(update_bot_status=None, restart_system=None):
         update_bot_status: 更新bot状态函数
         restart_system: 重启系统函数
     """
-    global app
-    from admin.core.app_setup import check_auth
+    logger.warning("register_external_apis 已废弃：外部 API 已在 admin.routes.registry 中统一注册")
+    return
 
     # 1. 提醒 API
     try:

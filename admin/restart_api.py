@@ -185,6 +185,12 @@ async def api_restart_container(request: Request):
             "error": f"重启容器失败: {str(e)}"
         })
 
+# 兼容端点：历史前端使用 /api/restart
+@router.post("/restart", response_class=JSONResponse)
+async def api_restart_compat(request: Request):
+    """兼容旧前端：/api/restart -> /api/system/restart"""
+    return await api_restart_container(request)
+
 def register_restart_routes(app_instance, auth_func):
     """
     注册重启相关路由

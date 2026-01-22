@@ -29,7 +29,7 @@ AllBot 是一个**支持多平台的智能机器人系统**，采用插件化架
 
 ### 核心特性
 
-- 🎯 **插件化架构**：56+ 功能插件，支持热加载和自定义开发
+- 🎯 **插件化架构**：内置 13 个插件（`plugins/`），支持热加载，并可通过插件市场安装更多
 - 🤖 **多 AI 平台**：Dify、OpenAI、FastGPT、SiliconFlow 等
 - 🌐 **多平台支持**：微信、QQ、Telegram、Web、Windows
 - 💻 **Web 管理后台**：FastAPI + Bootstrap 5 现代化界面
@@ -45,7 +45,7 @@ Python 3.11+ | FastAPI | SQLite + Redis | RabbitMQ | APScheduler | Loguru | Boot
 ### 用户文档
 - [用户手册](docs/用户手册.md) - 完整使用指南
 - [配置指南](docs/配置指南.md) - 详细配置说明
-- [插件列表](docs/插件列表.md) - 56 个插件介绍
+- [插件列表](docs/插件列表.md) - 插件市场与可用插件概览
 - [多平台适配器](docs/multi-platform-adapter.md) - QQ/Telegram/Web/Win
 
 ### 开发文档
@@ -140,7 +140,7 @@ python main.py
 多模型支持 | 图文识别 | 语音交互 | 上下文记忆 | 聊天室模式 | 积分系统
 
 ### 插件系统
-56+ 功能插件，涵盖 AI 对话、娱乐游戏、工具实用、电商购物、文件媒体、系统管理等领域。
+内置 13 个插件（`plugins/`），并支持通过插件市场扩展更多能力，覆盖 AI 对话、娱乐游戏、工具实用、文件媒体、系统管理等领域。
 
 详细功能列表请查看 [插件列表](docs/插件列表.md)。
 
@@ -175,8 +175,8 @@ class YourPlugin(PluginBase):
                 to_wxid=message["from_wxid"],
                 msg="回复内容"
             )
-            return True  # 阻止后续插件
-        return False  # 继续传递
+            return False  # 停止后续插件处理
+        return True  # 继续传递给后续插件
 ```
 
 ### 配置文件
@@ -248,7 +248,7 @@ option_1 = "value"
 AllBot/
 ├── admin/              # 管理后台（FastAPI + Bootstrap 5）
 ├── adapter/            # 多平台适配器（QQ/TG/Web/Win）
-├── plugins/            # 56+ 功能插件
+├── plugins/            # 内置插件（默认 13 个，可通过插件市场扩展）
 ├── database/           # 数据持久化（SQLite + Redis）
 ├── utils/              # 工具模块（插件管理、事件系统）
 ├── WechatAPI/          # 微信协议封装

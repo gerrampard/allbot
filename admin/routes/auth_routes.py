@@ -59,6 +59,23 @@ def register_auth_routes(app, config):
             logger.error(f"登录处理出错: {str(e)}")
             return {"success": False, "error": f"登录处理出错: {str(e)}"}
 
+    @app.get("/api/auth/status", response_class=JSONResponse)
+    async def auth_status(request: Request):
+        """获取当前登录状态（前端定期轮询）"""
+        try:
+            check_auth = getattr(request.app.state, "check_auth", None)
+            if check_auth is None:
+                from admin.core.app_setup import check_auth as check_auth  # 避免循环依赖时兜底
+
+            username = await check_auth(request) if check_auth else None
+            return {
+                "logged_in": bool(username),
+                "username": username,
+            }
+        except Exception as e:
+            logger.error(f"获取登录状态失败: {e}")
+            return {"logged_in": False}
+
     @app.post("/api/auth/logout", response_class=JSONResponse)
     async def logout_api(request: Request, response: Response):
         """用户登出接口"""

@@ -134,23 +134,34 @@ def register_websocket_routes(app):
    )
    ```
 
-2. **FastAPI 应用初始化**（`admin/server.py`）
+2. **FastAPI 应用初始化**（`admin/core/app_setup.py`）
    ```python
-   app = FastAPI(title="AllBot 管理后台")
-   app.mount("/static", StaticFiles(directory="admin/static"))
-   templates = Jinja2Templates(directory="admin/templates")
+   from admin.core.app_setup import create_app
+
+   app = create_app()
    ```
 
-3. **路由注册**（`admin/routes/register_routes.py`）
+3. **统一路由注册**（`admin/routes/registry.py`）
    ```python
-   from admin.routes.plugin_routes import router as plugin_router
-   app.include_router(plugin_router, prefix="/api/plugins")
+   from admin.routes.registry import register_all
+
+   register_all(app)
    ```
 
 4. **启动 Uvicorn**
    ```python
    uvicorn.run(app, host="0.0.0.0", port=9090)
    ```
+
+### 路由注册中心与契约自检
+
+- **统一注册入口**：`admin/routes/registry.py`
+  - `register_all(app)` 负责集中注册所有页面与 API 路由，避免多处重复注册导致冲突。
+  - `REGISTERED_ROUTE_FILES` 是“实际会被注册”的路由文件清单，供契约自检使用。
+- **契约自检工具**：`tools/route_audit.py`
+  - 静态扫描 `admin/templates` + `admin/static` 中出现的 `/api/*` 引用，并对照 `REGISTERED_ROUTE_FILES` 解析后端路由装饰器定义。
+  - 用法：`python3 "tools/route_audit.py"`
+  - 通过标准：`missing(api refs)=0` 且 `duplicates(method+path)=0`
 
 ### 配置项（main_config.toml）
 
@@ -171,28 +182,27 @@ log_level = "INFO"
 
 ### 核心 API 列表
 
-#### 1. 插件管理（`admin/routes/plugin_routes.py`）
-- `GET /api/plugins/list`：获取所有插件列表
-- `POST /api/plugins/toggle`：启用/禁用插件
-- `POST /api/plugins/reload`：重载插件
-- `GET /api/plugins/config`：获取插件配置
-- `POST /api/plugins/config`：保存插件配置
+#### 1. 插件管理与插件市场（`admin/routes/plugins.py`）
+- `GET /api/plugins`：获取本地插件列表
+- `POST /api/plugins/{plugin_name}/enable`：启用插件
+- `POST /api/plugins/{plugin_name}/disable`：禁用插件
+- `POST /api/plugins/install`：安装插件（含插件市场安装）
+- `GET /api/plugin_market`：插件市场（同源代理）
 
-#### 2. 系统监控（`admin/system_stats_api.py`）
+#### 2. 系统监控（`admin/routes/system.py`）
 - `GET /api/system/stats`：系统资源占用（CPU/内存/磁盘）
 - `GET /api/system/logs`：实时日志流
 - `GET /api/bot/status`：机器人在线状态
 
-#### 3. 文件管理（`admin/file_manager.py`）
+#### 3. 文件管理（`admin/routes/files.py`）
 - `GET /api/files/list`：文件列表
 - `POST /api/files/upload`：上传文件
-- `DELETE /api/files/delete`：删除文件
+- `POST /api/files/delete`：删除文件
 - `GET /api/files/download`：下载文件
 
 #### 4. 账号管理（`admin/account_manager.py`）
 - `GET /api/accounts/list`：账号列表
-- `POST /api/accounts/switch`：切换账号
-- `POST /api/accounts/logout`：登出账号
+- `POST /api/accounts/switch/{wxid}`：切换账号
 
 #### 5. 朋友圈（`admin/friend_circle_api.py`）
 - `GET /api/pyq/list`：朋友圈列表
@@ -200,22 +210,25 @@ log_level = "INFO"
 - `POST /api/pyq/comment`：评论
 
 #### 6. 提醒管理（`admin/reminder_api.py`）
-- `GET /api/reminders/list`：提醒列表
-- `POST /api/reminders/add`：添加提醒
-- `DELETE /api/reminders/delete`：删除提醒
+- `GET /api/reminders`：提醒列表
+- `GET /api/reminders/{wxid}`：获取指定用户提醒
+- `POST /api/reminders/{wxid}`：添加提醒
+- `PUT /api/reminders/{wxid}/{id}`：更新提醒
+- `DELETE /api/reminders/{wxid}/{id}`：删除提醒
 
-#### 7. 终端管理（`admin/terminal_routes.py`）
-- `WebSocket /api/terminal/ws`：Web 终端 WebSocket 连接
+#### 7. 终端管理（`admin/routes/terminal_routes.py`）
+- `GET /admin/wetty`：Web 终端页面（Wetty 代理）
+- `/wetty/*`、`/admin/wetty/*`：Wetty 资源与 Upgrade 通道代理
 
 ### API 认证机制
 
-所有 API 需要通过 JWT Token 或 Session 认证：
+管理后台采用基于 Cookie 的 Session 认证（itsdangerous 签名），路由中通过 `Depends(require_auth)` 注入当前用户名：
 ```python
-from admin.auth_helper import require_auth
+from fastapi import Depends, Request
+from admin.utils.auth_dependencies import require_auth
 
 @app.get("/api/protected")
-@require_auth
-async def protected_route(request: Request):
+async def protected_route(request: Request, username: str = Depends(require_auth)):
     # 受保护的路由
     pass
 ```
@@ -255,23 +268,31 @@ async def protected_route(request: Request):
 
 ```
 admin/
-├── server.py                    # 主启动文件（已重构，310行）
+├── server.py                    # 主启动文件（已重构，279行）
 ├── server.py.backup             # 原文件备份（9,153行）
 ├── server_refactored.py         # 重构版本（已合并到 server.py）
 ├── run_server.py                # 独立启动脚本
 │
 ├── core/                        # 🆕 核心模块
 │   ├── __init__.py
-│   └── app_setup.py             # FastAPI 应用创建与配置（343行）
+│   └── app_setup.py             # FastAPI 应用创建与配置（421行）
 │
 ├── routes/                      # 🆕 模块化路由（功能域垂直拆分）
-│   ├── __init__.py              # 路由聚合器（153行）
-│   ├── pages.py                 # 页面路由（430行）
-│   ├── system.py                # 系统管理 API（269行）
-│   ├── plugins.py               # 插件管理 API（1,401行）
-│   ├── files.py                 # 文件管理 API（1,091行）
-│   ├── contacts.py              # 联系人消息 API（1,713行）
-│   ├── misc.py                  # 其他功能 API（1,104行）
+│   ├── __init__.py              # 路由聚合器（175行，兼容入口）
+│   ├── registry.py              # 路由注册中心（统一注册入口）
+│   ├── pages.py                 # 页面路由（267行）
+│   ├── system.py                # 系统管理 API（292行）
+│   ├── plugins.py               # 插件管理/插件市场 API（1,171行）
+│   ├── files.py                 # 文件管理 API（969行）
+│   ├── contacts.py              # 联系人消息 API（1,664行）
+│   ├── misc.py                  # 杂项/聚合路由（75行）
+│   ├── auth_routes.py           # 认证相关 API
+│   ├── qrcode_routes.py         # 登录二维码 API
+│   ├── notification_routes.py   # 通知相关 API
+│   ├── websocket_routes.py      # WebSocket 路由
+│   ├── terminal_routes.py       # Wetty 终端代理
+│   ├── version_routes.py        # 版本与更新 API
+│   ├── message_routes.py        # 兼容消息发送 API
 │   ├── register_routes.py       # 旧路由注册器（保留兼容）
 │   ├── plugin_routes.py         # 旧插件路由（保留兼容）
 │   ├── about_routes.py          # 关于页面路由
@@ -298,7 +319,7 @@ admin/
 ├── system_stats_api.py          # 系统监控 API（独立模块）
 ├── friend_circle_api.py         # 朋友圈 API（独立模块）
 ├── reminder_api.py              # 提醒 API（独立模块）
-├── terminal_routes.py           # 终端 WebSocket（独立模块）
+├── terminal_routes.py           # 终端代理（兼容模块）
 ├── switch_account_api.py        # 账号切换 API（独立模块）
 ├── account_manager.py           # 账号管理器
 ├── adapter_manager.py           # 适配器管理器
@@ -366,20 +387,21 @@ admin/
    - 插件管理：启用/禁用/重载
    - 文件上传：测试大文件上传
    - 系统监控：查看 CPU/内存图表
-   - 终端连接：WebSocket 连接测试
+   - 终端：访问 `/admin/wetty`（Wetty 代理）
 
 ### API 测试（Pytest）
 
 ```python
 from fastapi.testclient import TestClient
-from admin.server import app
+from admin.core.app_setup import create_app
 
+app = create_app()
 client = TestClient(app)
 
 def test_get_plugins():
-    response = client.get("/api/plugins/list")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+    # /api/plugins 需要认证，测试时需构造合法 session cookie 或替换 app.state.check_auth
+    response = client.get("/api/plugins")
+    assert response.status_code in (200, 401)
 ```
 
 ### 性能优化建议
@@ -395,7 +417,7 @@ def test_get_plugins():
 ### Q1: 如何添加新页面？
 **A**：
 1. 在 `admin/templates/` 中创建 HTML 模板
-2. 在 `admin/server.py` 或 `admin/routes/` 中添加路由
+2. 在 `admin/routes/pages.py` 中添加页面路由（新增路由模块需在 `admin/routes/registry.py` 注册）
 3. 在前端导航菜单中添加链接（修改模板的侧边栏部分）
 
 ### Q2: 如何自定义主题？
@@ -409,7 +431,7 @@ uvicorn.run(app, host="0.0.0.0", port=9090,
 ```
 
 ### Q4: 如何限制管理员 IP？
-**A**：在 `auth_helper.py` 中添加 IP 白名单检查逻辑。
+**A**：在 `admin/core/app_setup.py` 的 `check_auth` 逻辑或 `admin/utils/auth_dependencies.py` 中添加 IP 白名单检查逻辑。
 
 ### Q5: 如何查看实时日志？
 **A**：访问控制面板的"系统日志"标签，或使用 `GET /api/system/logs` API。
@@ -419,10 +441,12 @@ uvicorn.run(app, host="0.0.0.0", port=9090,
 ## 📁 相关文件清单
 
 ### 核心文件
-- `admin/server.py`：FastAPI 主应用（约 500+ 行）
+- `admin/server.py`：管理后台启动入口（负责线程启动/uvicorn）
+- `admin/core/app_setup.py`：FastAPI 应用创建、依赖注入与中间件配置（内部调用 `registry.register_all`）
+- `admin/routes/registry.py`：路由注册中心（统一注册入口 + `REGISTERED_ROUTE_FILES`）
+- `admin/utils/auth_dependencies.py`：认证依赖（`require_auth`/`require_auth_page`）
 - `admin/run_server.py`：独立启动脚本
-- `admin/routes/register_routes.py`：路由注册器
-- `admin/auth_helper.py`：认证中间件
+- `tools/route_audit.py`：前端 `/api/*` 引用与后端路由的静态契约自检
 
 ### 前端模板
 - `admin/templates/ai_platforms.html`：AI 平台管理
@@ -442,135 +466,33 @@ uvicorn.run(app, host="0.0.0.0", port=9090,
 
 ## 🔧 扩展指引（已更新 ✨）
 
-### 重构后的开发模式
+### 添加/修改 API 路由（推荐）
 
-重构后采用模块化架构，新增功能更简单、更清晰。
+1. 优先在已注册模块中修改：`admin/routes/system.py`、`admin/routes/plugins.py`、`admin/routes/files.py`、`admin/routes/contacts.py` 等。
+2. API 鉴权：使用 `username: str = Depends(require_auth)`（见 `admin/utils/auth_dependencies.py`）。
+3. 修改后运行 `python3 "tools/route_audit.py"`，确保 `missing(api refs)=0` 且 `duplicates(method+path)=0`。
 
-### 添加新 API 路由（推荐方式）
+### 新增路由模块（需要更新 registry）
 
-**步骤**：
-1. 在对应的 `routes/*.py` 模块中添加路由函数
-2. 无需修改其他文件，自动生效
-
-**示例**：在插件管理中添加新功能
-```python
-# admin/routes/plugins.py
-
-def register_plugins_routes(app, check_auth, current_dir, plugin_manager):
-    """注册插件管理路由"""
-
-    # 现有路由...
-
-    # 🆕 添加新路由
-    @app.get("/api/plugins/statistics")
-    async def get_plugin_statistics(request: Request):
-        """获取插件统计信息"""
-        if not check_auth(request):
-            return JSONResponse({"error": "未授权"}, status_code=401)
-
-        # 实现逻辑
-        stats = {
-            "total": len(plugin_manager.plugins),
-            "enabled": sum(1 for p in plugin_manager.plugins if p.enabled),
-            "disabled": sum(1 for p in plugin_manager.plugins if not p.enabled)
-        }
-        return JSONResponse(stats)
-```
-
-### 添加新路由模块（高级）
-
-如果需要添加全新的功能域（如"任务管理"），创建新模块：
-
-**步骤**：
-1. 创建 `admin/routes/tasks.py`
-2. 定义路由注册函数
-3. 在 `admin/routes/__init__.py` 中注册
-
-**示例**：
-```python
-# admin/routes/tasks.py
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
-def register_tasks_routes(app, check_auth):
-    """注册任务管理路由"""
-
-    @app.get("/api/tasks/list")
-    async def get_tasks(request: Request):
-        if not check_auth(request):
-            return JSONResponse({"error": "未授权"}, status_code=401)
-        return JSONResponse({"tasks": []})
-
-    @app.post("/api/tasks/create")
-    async def create_task(request: Request):
-        if not check_auth(request):
-            return JSONResponse({"error": "未授权"}, status_code=401)
-        # 创建任务逻辑
-        return JSONResponse({"success": True})
-```
-
-```python
-# admin/routes/__init__.py
-def register_refactored_routes(app, templates, bot_instance, ...):
-    # 现有注册...
-
-    # 🆕 注册任务管理路由
-    try:
-        from .tasks import register_tasks_routes
-        register_tasks_routes(app, check_auth)
-        logger.info("✓ 任务管理路由注册成功")
-    except Exception as e:
-        logger.error(f"✗ 任务管理路由注册失败: {e}")
-```
-
-### 添加新 API 路由（旧方式，不推荐）
-
-**步骤**：
-1. 在 `admin/routes/` 中创建新文件（如 `my_routes.py`）
-2. 定义路由：
-   ```python
-   from fastapi import APIRouter
-   router = APIRouter()
-
-   @router.get("/my-endpoint")
-   async def my_endpoint():
-       return {"message": "Hello"}
-   ```
-3. 在 `admin/routes/register_routes.py` 中注册：
-   ```python
-   from admin.routes.my_routes import router as my_router
-   app.include_router(my_router, prefix="/api/my")
-   ```
+1. 创建 `admin/routes/xxx.py`（按功能域命名），提供 `register_xxx_routes(app, ...)` 或 APIRouter。
+2. 在 `admin/routes/registry.py` 中：
+   - 调用你的注册函数（或 `app.include_router(...)`）
+   - 将文件加入 `REGISTERED_ROUTE_FILES`（让 `tools/route_audit.py` 覆盖到）
+3. 验证：`python3 "tools/route_audit.py"` + `python3 -m compileall "admin" "tools"`。
 
 ### 添加前端页面
 
-**步骤**：
-1. 在 `admin/templates/` 中创建 `my_page.html`
-2. 继承基础模板：
-   ```html
-   {% extends "base.html" %}
-   {% block content %}
-       <h1>My Page</h1>
-   {% endblock %}
-   ```
-3. 在 `admin/server.py` 中添加路由：
-   ```python
-   @app.get("/my-page")
-   async def my_page(request: Request):
-       return templates.TemplateResponse("my_page.html", {"request": request})
-   ```
+1. 新建模板：`admin/templates/xxx.html`
+2. 在 `admin/routes/pages.py` 添加页面路由（`Depends(require_auth_page)`）
+3. 在 `admin/templates/base.html` 更新侧边栏导航
 
 ---
 
 **维护者提示**：
 
-1. **重构完成**：管理后台已完成模块化重构（2026-01-19），代码质量显著提升
-2. **开发规范**：新增功能请遵循模块化架构，在对应的 `routes/*.py` 中添加路由
-3. **向后兼容**：原 `server.py` 已备份为 `server.py.backup`，如遇问题可快速回滚
-4. **API 兼容性**：修改时请确保不破坏现有 API 兼容性，建议使用版本控制（如 `/api/v2/`）
-5. **文档同步**：添加新功能后请更新本文档的 API 列表
+1. 路由注册统一走 `admin/routes/registry.py`，避免在多个位置重复注册导致冲突。
+2. 新增/修改 `/api/*` 端点后，优先跑 `tools/route_audit.py` 做契约自检。
+3. 原 `server.py` 已备份为 `server.py.backup`（如需排查历史实现）。
 
 **重构详情**：
 - 📄 重构方案：[server_refactor_plan.md](./server_refactor_plan.md)
-- 📊 优化报告：[CODE_OPTIMIZATION_REPORT.md](./CODE_OPTIMIZATION_REPORT.md)
-- 🔐 认证重构：[AUTH_REFACTOR_GUIDE.md](./AUTH_REFACTOR_GUIDE.md)

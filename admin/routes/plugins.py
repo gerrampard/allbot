@@ -110,8 +110,13 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
         # 检查认证状态
         try:
             from utils.plugin_manager import plugin_manager
+            from admin.core.app_setup import get_bot_instance
 
-            success = await plugin_manager.load_plugin_from_directory(bot_instance, plugin_name)
+            bot = get_bot_instance()
+            if bot is None:
+                return {"success": False, "error": "机器人实例未初始化，请确保机器人已启动"}
+
+            success = await plugin_manager.load_plugin_from_directory(bot, plugin_name)
             return {"success": success}
         except Exception as e:
             logger.error(f"启用插件失败: {str(e)}")
@@ -1164,4 +1169,3 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
                         })
         except WebSocketDisconnect:
             manager.disconnect(websocket)
-

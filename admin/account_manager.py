@@ -1201,7 +1201,11 @@ def register_account_manager_routes(app, auth_func, status_update_func=None, res
         from admin.core.app_setup import get_version_info
         version_info = get_version_info()
 
-        # 使用传入的 templates 实例，而不是重新创建
+        templates = getattr(request.app.state, "templates", None)
+        if templates is None:
+            logger.error("templates 未注入到 app.state，无法渲染 accounts.html")
+            return HTMLResponse(content="模板未初始化", status_code=500)
+
         # 返回账号管理页面
         return templates.TemplateResponse(
             "accounts.html",

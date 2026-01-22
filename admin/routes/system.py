@@ -195,12 +195,17 @@ def register_system_routes(app, get_system_info, get_system_status, handle_syste
 
 
     @app.get("/api/system/logs", response_class=JSONResponse, tags=["系统"])
-    async def api_system_logs(lines: int = 100, username: str = Depends(require_auth)):
+    async def api_system_logs(
+        lines: int = 100,
+        log_level: str = "all",
+        username: str = Depends(require_auth),
+    ):
         """
         获取系统日志
 
         参数:
             lines: 返回的日志行数，默认 100
+            log_level: 日志级别过滤（前端参数，兼容），默认 all
         """
         try:
             # 查找日志文件
@@ -228,13 +233,17 @@ def register_system_routes(app, get_system_info, get_system_status, handle_syste
                 all_lines = f.readlines()
                 log_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
 
+            # 简单级别过滤（不强依赖具体日志格式）
+            level = (log_level or "all").strip().lower()
+            if level and level != "all":
+                upper = level.upper()
+                log_lines = [line for line in log_lines if upper in line]
+
             return {
                 "success": True,
-                "data": {
-                    "logs": "".join(log_lines),
-                    "file": log_files[0],
-                    "total_lines": len(all_lines)
-                }
+                "logs": [{"raw": line.rstrip("\n")} for line in log_lines],
+                "file": log_files[0],
+                "total_lines": len(all_lines),
             }
         except Exception as e:
             logger.error(f"获取系统日志失败: {str(e)}")

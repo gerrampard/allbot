@@ -1,7 +1,7 @@
 # AllBot - 智能微信机器人系统
 
 > **本文档为 AI 辅助开发优化而设计**
-> 最后更新：2026-01-20 12:42:09
+> 最后更新：2026-01-22 18:38:56
 
 ---
 
@@ -37,6 +37,25 @@
 
 ## 📋 变更记录 (Changelog)
 
+### 2026-01-22 18:38:56 - 文档同步：路由契约与统计对齐
+- **对齐当前事实**：更新统计数据、关键路径与示例语义（排除 plugins/ 文档）
+- **补充管理后台说明**：新增路由注册中心（registry.py）与契约自检工具（tools/route_audit.py）指引
+- **修正文档偏差**：对齐 WebChat API 端点说明；修正 README 插件示例返回值语义（True=继续，False=停止）
+
+### 2026-01-22 10:44:12 - 项目文档更新
+- **完成全仓清点**：识别 8 个核心模块，12 个插件目录
+- **统计数据更新**：186 个配置/代码文件，46,733 行 Python 代码，152 个 Python 文件
+- **文档覆盖率**：8/8 核心模块已有 CLAUDE.md（100% 覆盖）
+- **导航体系**：所有模块文档已包含面包屑导航
+- **Mermaid 图表**：根级文档已包含完整的模块结构图
+
+### 2026-01-22 09:27:29 - 项目文档初始化完成
+- **完成全仓清点**：识别 8 个核心模块，13 个插件目录
+- **统计数据更新**：188 个配置/代码文件，47,271 行 Python 代码
+- **文档覆盖率**：8/8 核心模块已有 CLAUDE.md（100% 覆盖）
+- **导航体系**：所有模块文档已包含面包屑导航
+- **Mermaid 图表**：根级文档已包含完整的模块结构图
+
 ### 2026-01-20 - 统一依赖注入机制
 - **修复系统更新功能**：解决"更新进度管理器不可用"错误
 - **新增 `init_app_state()` 函数**：统一管理所有全局依赖注入
@@ -69,7 +88,7 @@
 AllBot 是一个**基于微信协议的智能机器人系统**，通过插件化架构和多平台适配器设计，提供了以下核心能力：
 
 - **智能对话**：集成多种 AI 平台（Dify、OpenAI、FastGPT、SiliconFlow 等）
-- **插件生态**：56+ 功能插件，覆盖娱乐、工具、电商、文件处理等领域
+- **插件生态**：内置 13 个插件（`plugins/`），并支持通过插件市场扩展更多能力
 - **多协议支持**：支持 pad/ipad/mac/ipad2/car/win 等多种微信协议版本
 - **管理后台**：基于 FastAPI + Bootstrap 5 的 Web 管理界面
 - **容器化部署**：Docker + Docker Compose 开箱即用
@@ -112,11 +131,11 @@ AllBot 是一个**基于微信协议的智能机器人系统**，通过插件化
 │       适配器层 (Adapter Layer)          │
 │  QQ | Telegram | Web | Windows         │
 ├─────────────────────────────────────────┤
-│        核心调度 (bot_core.py)           │
+│        核心调度 (bot_core/)             │
 │  - 消息路由 - 事件分发 - 优先级队列      │
 ├─────────────────────────────────────────┤
 │       插件系统 (Plugin System)          │
-│  56+ 插件 | 装饰器驱动 | 热加载支持      │
+│  13 个内置插件 | 装饰器驱动 | 热加载支持  │
 ├─────────────────────────────────────────┤
 │     WechatAPI 客户端 (封装层)           │
 │  好友 | 群聊 | 朋友圈 | 红包 | 登录      │
@@ -138,15 +157,15 @@ graph TD
     A --> E["适配器层"];
     A --> F["基础设施"];
 
-    B --> B1["bot_core.py<br/>841 行 | 核心调度引擎"];
-    B --> B2["main.py<br/>467 行 | 程序入口"];
+    B --> B1["bot_core/<br/>986 行 | 核心调度引擎"];
+    B --> B2["main.py<br/>477 行 | 程序入口"];
     B --> B3["WechatAPI/<br/>微信客户端封装"];
 
-    C --> C1["plugins/<br/>56 个功能插件"];
+    C --> C1["plugins/<br/>13 个内置插件"];
     C --> C2["utils/plugin_manager.py<br/>581 行 | 插件管理器"];
     C --> C3["utils/plugin_base.py<br/>插件基类"];
 
-    D --> D1["admin/server.py<br/>310 行 | FastAPI 后台"];
+    D --> D1["admin/server.py<br/>279 行 | FastAPI 后台"];
     D --> D2["admin/routes/<br/>模块化路由"];
     D --> D3["admin/static/<br/>前端资源"];
 
@@ -159,7 +178,7 @@ graph TD
     F --> F2["utils/<br/>工具模块"];
     F --> F3["Docker<br/>容器化部署"];
 
-    click B1 "#核心调度引擎" "查看核心调度文档"
+    click B1 "./bot_core/CLAUDE.md" "查看核心调度文档"
     click C1 "./plugins/CLAUDE.md" "查看插件系统文档"
     click D1 "./admin/CLAUDE.md" "查看管理后台文档"
     click E1 "./adapter/CLAUDE.md" "查看适配器文档"
@@ -179,21 +198,23 @@ graph TD
 
 | 模块路径 | 职责 | 核心文件 | 代码量 | 文档链接 |
 |---------|------|----------|--------|---------|
-| **核心引擎** | 消息调度、事件分发、插件协调 | `bot_core.py` | 841 行 | - |
-| **主程序** | 启动流程、配置管理、监控重启 | `main.py` | 467 行 | - |
-| **WechatAPI/** | 微信协议封装（好友/群聊/朋友圈） | `Client/*.py` | 16 个文件 | [详细文档](./WechatAPI/CLAUDE.md) |
-| **plugins/** | 56 个功能插件（AI/游戏/工具/电商） | 各插件 `main.py` | 56 个插件 | [详细文档](./plugins/CLAUDE.md) |
-| **admin/** | Web 管理后台（FastAPI，已重构） | `server.py` | 310 行 | [详细文档](./admin/CLAUDE.md) |
-| **adapter/** | 多平台适配器（QQ/TG/Web/Win） | `loader.py` | 121 行 | [详细文档](./adapter/CLAUDE.md) |
-| **database/** | 数据持久化（SQLite/Redis） | `XYBotDB.py` | 9 个文件 | [详细文档](./database/CLAUDE.md) |
-| **utils/** | 工具函数库（装饰器/日志/性能监控） | `*.py` | 21 个文件 | [详细文档](./utils/CLAUDE.md) |
+| **核心引擎** | 启动编排、消息调度、插件协调 | `bot_core/` | 986 行（7 文件） | [详细文档](./bot_core/CLAUDE.md) |
+| **主程序** | 启动流程、配置管理、监控重启 | `main.py` | 477 行 | - |
+| **WechatAPI/** | 微信协议封装（好友/群聊/朋友圈） | `Client/*.py` | 12 个文件 | [详细文档](./WechatAPI/CLAUDE.md) |
+| **plugins/** | 内置插件（默认 13 个，可通过插件市场扩展） | 各插件 `main.py` | 13 个插件 | [详细文档](./plugins/CLAUDE.md) |
+| **admin/** | Web 管理后台（FastAPI，已重构） | `server.py` | 279 行 | [详细文档](./admin/CLAUDE.md) |
+| **adapter/** | 多平台适配器（QQ/TG/Web/Win） | `loader.py` | 120 行 | [详细文档](./adapter/CLAUDE.md) |
+| **database/** | 数据持久化（SQLite/Redis） | `*.py` | 8 个 Python 文件 | [详细文档](./database/CLAUDE.md) |
+| **utils/** | 工具函数库（装饰器/日志/性能监控） | `*.py` | 32 个 Python 文件 | [详细文档](./utils/CLAUDE.md) |
 | **docs/** | 用户手册与开发指南 | `*.md` | 12 个文档 | - |
 | **Docker** | 容器化部署配置 | `Dockerfile`, `docker-compose.yml` | - | - |
 
 **统计数据**：
-- 核心模块 Python 文件：113 个（不含插件）
-- 插件数量：56 个
-- 核心代码总行数：约 1,889 行（bot_core + main + plugin_manager）
+- Python 文件（不含 plugins/）：137 个（36,639 行）
+- Python 文件（含 plugins/）：158 个（48,377 行）
+- 配置/源码文件（.py/.toml/.yml/.yaml/.json/.ini/.cfg/.conf，排除 .git 与 __pycache__，含 plugins/）：197 个
+- plugins/ 内置插件目录：13 个（支持插件市场扩展）
+- 核心关键文件行数：bot_core/ 986 + main.py 477 + utils/plugin_manager.py 581 ≈ 2,044 行
 
 ---
 
@@ -237,23 +258,20 @@ python main.py
 
 ## 🔑 核心模块详解
 
-### 1. 核心调度引擎（bot_core.py）
+### 1. 核心调度引擎（bot_core/）
 
 **职责**：
+- 启动编排（加载配置、初始化客户端、登录、服务初始化、消息监听）
 - 消息接收与预处理
-- 事件分发到插件系统
-- 优先级队列管理
-- 异步任务调度
+- 事件分发到插件系统（EventManager）
+- 插件优先级调度与消息路由（ReplyRouter）
 
-**关键类**：
+**关键入口**（见 `bot_core/orchestrator.py`）：
 ```python
-class BotCore:
-    async def handle_message(self, message: dict):
-        """消息处理主流程"""
-        # 1. 消息预处理
-        # 2. 事件分发（EventManager.emit）
-        # 3. 插件优先级调度
-        # 4. 响应路由（ReplyRouter）
+from bot_core import bot_core
+
+async def main():
+    await bot_core()  # 6 阶段启动编排，内部阻塞监听消息
 ```
 
 **启动流程**：
@@ -288,11 +306,11 @@ class MyPlugin(PluginBase):
         return True  # 继续执行
 ```
 
-**插件统计**（56 个）：
-- AI 平台插件：Dify、OpenAI、FastGPT、SiliconFlow 等
-- 娱乐插件：钓鱼、表情包生成、游戏等
-- 工具插件：文件管理、提醒、联系人管理等
-- 电商插件：京东返利、淘宝客等
+**插件统计**（内置 13 个）：
+- AI 平台插件：Dify、DifyConversationManager
+- 娱乐插件：FishingPlugin、RandomPicture
+- 工具插件：DependencyManager、ManagePlugin、FileDownloader、FileUploadTest、Reminder、VideoSender
+- 系统插件：BotStatus、GroupMonitor、GroupWelcome
 
 详细列表见 [plugins/CLAUDE.md](./plugins/CLAUDE.md)
 
@@ -386,9 +404,9 @@ class MyPlugin(PluginBase):
 **当前状态**：项目暂无独立的测试目录（未检测到 `tests/` 目录）。
 
 **建议**：
-- 为核心模块（`bot_core.py`, `plugin_manager.py`）添加单元测试
+- 为核心模块（`bot_core/`, `utils/plugin_manager.py`）添加单元测试
 - 使用 `pytest` + `pytest-asyncio` 测试异步逻辑
-- 插件开发时编写示例测试用例（参考 `ExamplePlugin`）
+- 插件开发时编写示例测试用例（参考现有内置插件目录）
 
 **测试示例**：
 ```bash
@@ -485,7 +503,7 @@ docker logs -f allbot
 
 #### 1. 添加新插件
 **路径**：`plugins/YourPlugin/`
-**参考**：`plugins/ExamplePlugin/` 或 `plugins/BotStatus/`
+**参考**：`plugins/BotStatus/`、`plugins/RandomPicture/`、`plugins/Reminder/`
 **关键文件**：
 - `__init__.py`（导出插件类）
 - `main.py`（插件逻辑）
@@ -493,7 +511,7 @@ docker logs -f allbot
 - `README.md`（功能说明）
 
 #### 2. 修改核心调度逻辑
-**路径**：`bot_core.py`
+**路径**：`bot_core/`（入口：`bot_core/orchestrator.py`）
 **注意事项**：
 - 阅读现有消息分发逻辑（`ReplyRouter`, `EventManager`）
 - 避免破坏优先级队列机制
@@ -588,16 +606,16 @@ curl http://localhost:9090/api/system/stats
 | pydantic | ~2.10.5 | 数据验证 |
 | websockets | >=10.0 | WebSocket 支持 |
 
-**插件额外依赖**：部分插件有独立的 `requirements.txt`（如 `plugins/APIInterface/requirements.txt`）。
+**插件额外依赖**：部分插件可能有独立的 `requirements.txt`（以各插件目录为准）。
 
 ---
 
 ## 🎓 学习路径（新手向）
 
-1. **从示例插件开始**：阅读 `plugins/ExamplePlugin/` 和 `plugins/BotStatus/`
+1. **从示例插件开始**：阅读 `plugins/BotStatus/`、`plugins/RandomPicture/`、`plugins/Reminder/`
 2. **理解装饰器机制**：`utils/decorators.py` + `utils/event_manager.py`
 3. **掌握数据持久化**：`database/XYBotDB.py` 的 CRUD 操作
-4. **深入核心调度**：`bot_core.py` 的消息处理流程
+4. **深入核心调度**：`bot_core/` 的消息处理流程（入口：`bot_core/orchestrator.py`）
 5. **扩展前端界面**：`admin/templates/` + `admin/static/`
 
 ---

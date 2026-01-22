@@ -193,3 +193,64 @@ def register_version_routes(app, get_version_info, current_dir,
         except Exception as e:
             logger.error(f"获取版本信息失败: {str(e)}")
             return {"success": False, "error": str(e)}
+
+    # ---------------------------------------------------------------------
+    # 兼容端点：旧前端使用 /api/check_update 与 /api/update_bot
+    # ---------------------------------------------------------------------
+
+    @app.get("/api/check_update", response_class=JSONResponse, tags=["系统"])
+    async def api_check_update(username: str = Depends(require_auth)):
+        """兼容旧前端：检查更新（从 version.json 返回）"""
+        try:
+            version_info = get_version_info()
+            current = str(version_info.get("version") or "").lstrip("v")
+            latest_raw = version_info.get("latest_version") or version_info.get("version") or ""
+            latest = str(latest_raw).lstrip("v")
+
+            force_update = bool(version_info.get("force_update"))
+            update_available = bool(version_info.get("update_available"))
+            has_update = (force_update or update_available) and (force_update or (latest and latest != current))
+
+            return {
+                "success": True,
+                "has_update": has_update,
+                "latest_version": latest or current,
+                "update_url": version_info.get("update_url", ""),
+                "update_description": version_info.get("update_description", ""),
+            }
+        except Exception as e:
+            logger.error(f"检查更新失败: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/update_bot", response_class=JSONResponse, tags=["系统"])
+    async def api_update_bot(request: Request, username: str = Depends(require_auth)):
+        """兼容旧前端：触发更新并重启（复用 update_with_progress 流程）"""
+        try:
+            version_info = get_version_info()
+            if not (version_info.get("update_available") or version_info.get("force_update")):
+                return {"success": False, "error": "没有可用的更新"}
+
+            if not update_progress_manager:
+                return {"success": False, "error": "更新进度管理器不可用"}
+
+            async def run_update():
+                try:
+                    from admin.update_with_progress import update_with_progress
+                    await update_with_progress(
+                        version_info,
+                        update_progress_manager,
+                        get_github_url,
+                        current_dir,
+                    )
+                    await asyncio.sleep(3)
+                    logger.warning("更新完成，准备重启系统...")
+                    import sys
+                    sys.exit(0)
+                except Exception as e:
+                    logger.error(f"更新流程执行失败: {e}")
+
+            asyncio.create_task(run_update())
+            return {"success": True, "message": "更新任务已启动"}
+        except Exception as e:
+            logger.error(f"触发更新失败: {e}")
+            return {"success": False, "error": str(e)}

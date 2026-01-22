@@ -88,10 +88,6 @@ def start_server(host_arg=None, port_arg=None, username_arg=None, password_arg=N
     logger.info("创建 FastAPI 应用实例...")
     app = create_app()
 
-    # 注册路由
-    logger.info("注册路由...")
-    setup_routes()
-
     # 日志记录所有已注册的路由
     logger.info("已注册的路由列表:")
     for route in app.routes:
@@ -146,6 +142,9 @@ def setup_routes():
     这个函数使用新的模块化路由注册方式。
     如果需要使用原有的完整路由，请使用 server.py 中的 setup_routes()。
     """
+    logger.warning("setup_routes 已废弃：路由已在 create_app() 中通过 admin.routes.registry 统一注册")
+    return
+
     global app
 
     # 导入必要的辅助函数（从原 server.py）
@@ -200,6 +199,9 @@ def register_external_apis():
 
     这些模块已经是独立文件，直接导入并注册即可。
     """
+    logger.warning("register_external_apis 已废弃：外部 API 已在 admin.routes.registry 中统一注册")
+    return
+
     global app
     from core.app_setup import check_auth
 

@@ -340,6 +340,14 @@ def create_app() -> FastAPI:
     # 初始化 app.state 依赖注入
     init_app_state(app)
 
+    # 统一注册路由（避免在多个位置重复注册导致冲突）
+    try:
+        from admin.routes.registry import register_all
+        register_all(app)
+        logger.info("路由注册中心已完成统一注册")
+    except Exception as e:
+        logger.error(f"路由注册中心注册失败: {e}")
+
     return app
 
 

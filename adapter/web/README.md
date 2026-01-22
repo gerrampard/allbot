@@ -104,10 +104,13 @@ ws-port = 9091
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/webchat` | GET | 聊天界面页面 |
+| `/api/webchat/status` | GET | 获取 WebChat 状态（前端轮询用） |
 | `/api/webchat/send` | POST | 发送消息 |
-| `/api/webchat/history` | GET | 获取历史消息 |
-| `/api/webchat/clear` | POST | 清空历史 |
-| `/ws/webchat` | WebSocket | WebSocket 连接 |
+| `/api/webchat/send_file` | POST | 发送文件/媒体 |
+| `/api/webchat/sessions` | GET | 会话列表（当前为单会话模式） |
+| `/api/webchat/sessions/{session_id}` | GET | 获取会话详情 |
+| `/api/webchat/media/{media_id}` | GET | 获取媒体资源 |
+| `/api/webchat/ws` | WebSocket | WebSocket 连接 |
 
 ## 🔴 常见问题
 

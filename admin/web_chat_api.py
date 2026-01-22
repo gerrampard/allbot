@@ -753,8 +753,28 @@ def register_web_chat_routes(app, check_auth):
         if ingested > 0:
             logger.success(f"✅ 已处理 {ingested} 条历史回复消息")
 
-        # 启动后台消费循环任务
-        _consume_task = asyncio.create_task(_consume_replies_loop())
-        logger.success("🚀 [WebChat] 后台消费循环任务已启动，将实时监听回复队列")
+        # 启动后台消费循环任务（需要运行中的 event loop）
+        try:
+            _consume_task = asyncio.create_task(_consume_replies_loop())
+            logger.success("🚀 [WebChat] 后台消费循环任务已启动，将实时监听回复队列")
+        except RuntimeError as e:
+            # 兼容：应用启动阶段可能尚未进入 event loop
+            logger.warning(f"WebChat 消费循环启动失败（将延迟到 startup 阶段）: {e}")
+
+            if not getattr(app.state, "_webchat_consumer_startup_registered", False):
+                app.state._webchat_consumer_startup_registered = True
+
+                @app.on_event("startup")
+                async def _start_webchat_consumer():
+                    adapter_inner = _get_web_adapter()
+                    if adapter_inner and adapter_inner.enabled:
+                        try:
+                            global _consume_task
+                            _consume_task = asyncio.create_task(_consume_replies_loop())
+                            logger.success("🚀 [WebChat] startup 阶段已启动后台消费循环任务")
+                        except Exception as exc:
+                            logger.error(f"WebChat startup 启动消费循环失败: {exc}")
+                    else:
+                        logger.warning("⚠️  [WebChat] Web适配器未启用，startup 阶段跳过消费循环")
     else:
         logger.warning("⚠️  [WebChat] Web适配器未启用，后台消费循环未启动")

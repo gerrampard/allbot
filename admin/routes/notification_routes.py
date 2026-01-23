@@ -3,7 +3,6 @@
 
 职责：处理 PushPlus 通知设置、测试和历史记录
 """
-import os
 from typing import Optional
 from pathlib import Path
 from fastapi import Request, Depends
@@ -14,6 +13,16 @@ try:
     import tomllib
 except ImportError:
     import tomli as tomllib
+
+
+def _get_main_config_path() -> Path:
+    """
+    获取项目根目录的 main_config.toml 路径。
+
+    notification_routes.py 位于 admin/routes/ 下，项目根目录在其上两级：
+    <project>/admin/routes/notification_routes.py -> <project>/main_config.toml
+    """
+    return Path(__file__).resolve().parent.parent.parent / "main_config.toml"
 
 
 def register_notification_routes(app, templates):
@@ -27,7 +36,7 @@ def register_notification_routes(app, templates):
     from admin.utils import require_auth, require_auth_page
     from admin.core.app_setup import get_version_info
 
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = _get_main_config_path()
 
     @app.get("/notification", response_class=HTMLResponse)
     async def notification_page(request: Request, username: Optional[str] = Depends(require_auth_page)):
@@ -71,7 +80,6 @@ def register_notification_routes(app, templates):
     async def api_get_notification_settings(request: Request, username: str = Depends(require_auth)):
         """API: 获取通知设置"""
         try:
-            config_path = Path(current_dir).parent / "main_config.toml"
             try:
                 with open(config_path, "rb") as f:
                     config_data = tomllib.load(f)
@@ -101,7 +109,6 @@ def register_notification_routes(app, templates):
         try:
             new_config = await request.json()
 
-            config_path = Path(current_dir).parent / "main_config.toml"
             try:
                 with open(config_path, "rb") as f:
                     config_data = tomllib.load(f)

@@ -14,6 +14,49 @@ from admin.utils import build_page_context
 router = APIRouter()
 
 
+def _coerce_float(value, default: float = 0.0) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        text = str(value).strip()
+        if not text:
+            return default
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        text = text.replace(",", "")
+        return float(text)
+    except Exception:
+        return default
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        text = str(value).strip()
+        if not text:
+            return default
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        text = text.replace(",", "")
+        return int(float(text))
+    except Exception:
+        return default
+
+
+def _coerce_str(value, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
 def register_page_routes(app, templates, bot_instance, get_version_info, get_system_info=None, get_system_status=None):
     """
     注册所有页面路由
@@ -199,7 +242,29 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
             return RedirectResponse(url="/login")
 
         version_info = get_version_info()
-        context = build_page_context(request, "system", version_info)
+        system_status = {}
+        if get_system_status:
+            try:
+                system_status = get_system_status() or {}
+            except Exception as e:
+                logger.error(f"获取系统状态失败: {e}")
+                system_status = {}
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        safe_system_status = {
+            "time": _coerce_str(system_status.get("time"), now_str),
+            "uptime": _coerce_str(system_status.get("uptime"), "未知"),
+            "start_time": _coerce_str(system_status.get("start_time"), "未知"),
+            "cpu_percent": _coerce_float(system_status.get("cpu_percent"), 0.0),
+            "memory_percent": _coerce_float(system_status.get("memory_percent"), 0.0),
+            "memory_used": _coerce_int(system_status.get("memory_used"), 0),
+            "memory_total": _coerce_int(system_status.get("memory_total"), 0),
+            "disk_percent": _coerce_float(system_status.get("disk_percent"), 0.0),
+            "disk_used": _coerce_int(system_status.get("disk_used"), 0),
+            "disk_total": _coerce_int(system_status.get("disk_total"), 0),
+        }
+
+        context = build_page_context(request, "system", version_info, system_status=safe_system_status)
         return templates.TemplateResponse("system.html", context)
 
 
@@ -249,6 +314,17 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         version_info = get_version_info()
         context = build_page_context(request, "files", version_info)
         return templates.TemplateResponse("files.html", context)
+
+    # 文件管理器（旧版独立页面，供 /files iframe 使用）
+    @app.get("/file-manager", response_class=HTMLResponse, tags=["页面"])
+    async def file_manager_page(request: Request, username: Optional[str] = Depends(require_auth_page)):
+        """文件管理器页面"""
+        if not username:
+            return RedirectResponse(url="/login")
+
+        version_info = get_version_info()
+        context = build_page_context(request, "file_manager", version_info)
+        return templates.TemplateResponse("file-manager.html", context)
 
 
     # GitHub 代理页面

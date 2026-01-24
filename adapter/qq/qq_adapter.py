@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import tomllib
@@ -10,6 +12,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional, Set, Tuple
 
+import aiohttp
 import redis
 import redis.asyncio as aioredis
 import websockets
@@ -63,6 +66,12 @@ class QQAdapter:
         self.dedup_limit = int(self.qq_config.get("dedupCacheSize", 2000))
         self.max_clients = int(self.qq_config.get("maxClients", 1))
         self.log_raw_message = bool(self.qq_config.get("logRawMessage", False))
+
+        media_dir = adapter_cfg.get("mediaCacheDir") or self.qq_config.get("mediaCacheDir") or "admin/static/temp/qq"
+        self.media_dir = Path(media_dir)
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+        self.files_dir = Path("files")
+        self.files_dir.mkdir(parents=True, exist_ok=True)
 
         allowed_groups_cfg = self.qq_config.get("allowedGroups")
         if allowed_groups_cfg is None:
@@ -270,6 +279,10 @@ class QQAdapter:
         normalized = self._normalize_message(msg_data)
         if not normalized:
             return
+        try:
+            await self._enrich_media_fields(normalized, msg_data)
+        except Exception as exc:
+            self._logger.warning(f"媒体增强失败: {exc}")
         if self.redis_async is None:
             self._logger.error("异步 Redis 未初始化，无法写入消息")
             return
@@ -358,6 +371,79 @@ class QQAdapter:
         self._register_session(session_id)
         return payload
 
+    # ------------------------------------------------------------------
+    # 媒体增强
+    # ------------------------------------------------------------------
+    async def _enrich_media_fields(self, message: Dict[str, Any], raw: Dict[str, Any]) -> None:
+        """为入站 QQ 消息补充媒体字段，便于上层统一处理图片引用等逻辑。"""
+        try:
+            if message.get("MsgType") != 3:
+                return
+
+            image_url: Optional[str] = None
+            file_hint: Optional[str] = None
+
+            segments = raw.get("message") or []
+            if isinstance(segments, list):
+                for seg in segments:
+                    if not isinstance(seg, dict):
+                        continue
+                    if seg.get("type") != "image":
+                        continue
+                    data = seg.get("data") or {}
+                    if not isinstance(data, dict):
+                        continue
+                    image_url = data.get("url") or data.get("file") or ""
+                    file_hint = data.get("file")
+                    if image_url:
+                        break
+
+            if not image_url:
+                raw_text = raw.get("raw_message") or ""
+                if isinstance(raw_text, str) and "[CQ:image" in raw_text:
+                    image_url = (
+                        self._extract_cq_field(raw_text, "url")
+                        or self._extract_cq_field(raw_text, "file")
+                        or ""
+                    )
+
+            if not image_url:
+                return
+
+            base64_data = await self._download_image_as_base64(image_url)
+            if not base64_data:
+                return
+
+            path, md5_value = self._persist_media_base64(base64_data, None, default_suffix=".jpg")
+            message["ResourcePath"] = path
+            message["ImageBase64"] = base64_data
+            message["ImageMD5"] = md5_value
+
+            media_extra = message.setdefault("Extra", {}).setdefault("media", {})
+            media_extra.setdefault("url", image_url)
+            if file_hint:
+                media_extra.setdefault("file", file_hint)
+            media_extra.setdefault("md5", md5_value)
+        except Exception as exc:
+            # 这里异常已由调用方统一处理，避免打断消息主流程
+            raise exc
+
+    async def _download_image_as_base64(self, url: str) -> Optional[str]:
+        timeout = aiohttp.ClientTimeout(total=30)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        self._logger.warning(f"下载图片失败: HTTP {resp.status} url={url}")
+                        return None
+                    content = await resp.read()
+        except Exception as exc:
+            self._logger.warning(f"下载图片异常: {exc}")
+            return None
+        if not content:
+            return None
+        return base64.b64encode(content).decode("utf-8")
+
     def _convert_content(self, raw: str, sender_wxid: Optional[str]) -> Tuple[int, str]:
         if "[CQ:image" in raw:
             url = self._extract_cq_field(raw, "url") or self._extract_cq_field(raw, "file") or ""
@@ -397,6 +483,28 @@ class QQAdapter:
             old = self._recent_messages.popleft()
             self._recent_keys.discard(old)
         return False
+
+    def _persist_media_base64(self, base64_data: str, preferred_md5: Optional[str], default_suffix: str) -> Tuple[str, str]:
+        binary = base64.b64decode(base64_data)
+        md5_value = preferred_md5 or hashlib.md5(binary).hexdigest()
+        suffix = default_suffix or ".dat"
+        filename = f"{md5_value}_{int(time.time() * 1000)}{suffix}"
+        target = self.media_dir / filename
+        with open(target, "wb") as output:
+            output.write(binary)
+        self._mirror_files(target, md5_value)
+        return str(target), md5_value
+
+    def _mirror_files(self, path: Path, md5_value: str) -> None:
+        try:
+            dst = self.files_dir / f"{md5_value}{path.suffix}"
+            if not dst.exists():
+                shutil.copy2(path, dst)
+            plain_dst = self.files_dir / md5_value
+            if not plain_dst.exists():
+                shutil.copy2(path, plain_dst)
+        except Exception as exc:
+            self._logger.warning(f"复制媒体到 files 目录失败: {exc}")
 
     # ------------------------------------------------------------------
     # 回复通道

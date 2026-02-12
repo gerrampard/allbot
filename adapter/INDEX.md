@@ -1,0 +1,18 @@
+<!-- AUTO-DOC: Update me when files in this folder change -->
+
+# adapter
+
+多平台适配层：负责把外部平台消息统一写入 `allbot` 队列，并从平台专属 `replyQueue` 消费回复。
+
+## Files
+
+| File | Role | Function |
+|------|------|----------|
+| __init__.py | Package | 适配器包入口 |
+| base.py | Core | 通用日志工具 `AdapterLogger` |
+| loader.py | Core | 扫描 `adapter/*/config.toml` 并启动启用适配器 |
+| qq/qq_adapter.py | Platform | QQ/NapCat 协议桥接 |
+| tg/telegram_adapter.py | Platform | Telegram Bot API 协议桥接 |
+| web/web_adapter.py | Platform | Web 管理后台对话桥接 |
+| win/win_adapter.py | Platform | Win 协议桥接 |
+| wx/wx_adapter.py | Platform | wx-filehelper-api 协议桥接（含在线检测+扫码登录） |

@@ -8,6 +8,7 @@
 1. 在 adapter/wx/config.toml 中设置 baseUrl 与 Redis。
 2. 打开 [adapter].enabled 与 [wxfilehelper].enable。
 3. 适配器启动后会先检查 /login/status，离线时自动拉取 /qr 保存二维码。
+4. 入站会过滤 sent_ 回显并生成纯数字 MsgId，避免框架 int() 转换异常。
 """
 
 from __future__ import annotations
@@ -184,6 +185,7 @@ class WxFileHelperAdapter:
             if not updates:
                 self.stop_event.wait(self.polling_interval)
                 continue
+            self._logger.info(f"拉取到 {len(updates)} 条更新")
 
             for update in updates:
                 if self.stop_event.is_set():
@@ -349,8 +351,9 @@ class WxFileHelperAdapter:
         message = update.get("message")
         if not isinstance(message, dict):
             return
-
-        if message.get("is_from_bot"):
+        message_id = str(message.get("message_id") or "").strip()
+        if message_id.startswith("sent_"):
+            self._logger.debug(f"跳过回显消息: {message_id}")
             return
 
         normalized = self._normalize_update(update, message)
@@ -378,8 +381,7 @@ class WxFileHelperAdapter:
         timestamp = int(message.get("date") or time.time())
         update_id = update.get("update_id")
         message_id = message.get("message_id")
-        raw_msg_id = message_id if message_id is not None else update_id
-        msg_id = str(raw_msg_id or f"{self.platform}_{int(time.time() * 1000)}")
+        msg_id = self._build_numeric_msg_id(message_id, update_id, timestamp)
 
         session_id = self._build_session_id(message)
         if self._is_duplicate(session_id, msg_id):
@@ -416,10 +418,23 @@ class WxFileHelperAdapter:
             "Extra": {
                 "wxfilehelper": {
                     "raw": update,
+                    "raw_message_id": str(message_id or ""),
                 }
             },
         }
         return payload
+
+    @staticmethod
+    def _build_numeric_msg_id(message_id: Any, update_id: Any, timestamp: int) -> str:
+        msg_text = str(message_id or "").strip()
+        if msg_text.isdigit():
+            return msg_text
+        update_text = str(update_id or "").strip()
+        if update_text.isdigit():
+            return str((int(update_text) << 32) + (timestamp & 0xFFFFFFFF))
+        seed = f"{msg_text}|{update_text}|{timestamp}"
+        value = int(hashlib.md5(seed.encode("utf-8")).hexdigest()[:15], 16)
+        return str(value)
 
     def _enrich_image_fields(
         self,

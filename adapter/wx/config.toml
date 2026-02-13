@@ -28,6 +28,10 @@ pollingLimit = 50
 pollingInterval = 1
 # 登录状态检测是否触发服务端主动轮询（建议 false，避免慢请求导致超时）
 loginAutoPoll = false
+# 启动时是否跳过历史积压更新（建议 true，避免重启重复处理旧消息）
+skipHistoryOnStart = true
+# 启动历史同步每批拉取上限（仅用于 skipHistoryOnStart）
+startupSyncLimit = 100
 
 # 登录检测与二维码刷新
 loginCheckInterval = 3

@@ -9,6 +9,7 @@
 2. 打开 [adapter].enabled 与 [wxfilehelper].enable。
 3. 适配器启动后会先检查 /login/status，离线时自动拉取 /qr 保存二维码。
 4. 入站会过滤 sent_ 回显并生成纯数字 MsgId，避免框架 int() 转换异常。
+5. 默认启动时先跳过历史积压更新，避免重启后重复消费旧消息。
 """
 
 from __future__ import annotations
@@ -68,6 +69,8 @@ class WxFileHelperAdapter:
         self.polling_limit = max(1, min(100, int(self.wx_cfg.get("pollingLimit", 50))))
         self.polling_interval = max(0.2, float(self.wx_cfg.get("pollingInterval", 1)))
         self.login_auto_poll = bool(self.wx_cfg.get("loginAutoPoll", False))
+        self.skip_history_on_start = bool(self.wx_cfg.get("skipHistoryOnStart", True))
+        self.startup_sync_limit = max(1, min(100, int(self.wx_cfg.get("startupSyncLimit", 100))))
         self.login_check_interval = max(1.0, float(self.wx_cfg.get("loginCheckInterval", 3)))
         self.qr_refresh_interval = max(3.0, float(self.wx_cfg.get("qrRefreshInterval", 30)))
         self.log_raw_message = bool(self.wx_cfg.get("logRawMessage", False))
@@ -127,6 +130,7 @@ class WxFileHelperAdapter:
         self._recent_messages: Deque[str] = deque()
         self._recent_keys: Set[str] = set()
         self._poll_offset = 0
+        self._startup_synced = not self.skip_history_on_start
 
         self._online = False
         self._last_offline_log_at = 0.0
@@ -170,6 +174,23 @@ class WxFileHelperAdapter:
             if not self._ensure_online():
                 self.stop_event.wait(self.login_check_interval)
                 continue
+
+            if not self._startup_synced:
+                try:
+                    skipped = self._sync_startup_offset()
+                    self._startup_synced = True
+                    if skipped > 0:
+                        self._logger.warning(
+                            f"启动去重: 已跳过 {skipped} 条历史更新，当前 offset={self._poll_offset}"
+                        )
+                except PermissionError:
+                    self._mark_offline("API 返回未登录，等待扫码")
+                    self.stop_event.wait(self.login_check_interval)
+                    continue
+                except Exception as exc:
+                    self._logger.error(f"启动去重失败: {exc}")
+                    self._startup_synced = True
+                    self._logger.warning("启动去重失败，回退为常规轮询模式")
 
             try:
                 updates = self._fetch_updates()
@@ -278,12 +299,46 @@ class WxFileHelperAdapter:
             self._logger.info(f"二维码接口返回: {text}")
 
     def _fetch_updates(self) -> list[Dict[str, Any]]:
+        return self._fetch_updates_batch(
+            offset=self._poll_offset,
+            limit=self.polling_limit,
+            timeout=self.polling_timeout,
+        )
+
+    def _sync_startup_offset(self) -> int:
+        skipped = 0
+        max_rounds = 20
+        for _ in range(max_rounds):
+            if self.stop_event.is_set():
+                break
+            updates = self._fetch_updates_batch(
+                offset=self._poll_offset,
+                limit=self.startup_sync_limit,
+                timeout=1,
+            )
+            if not updates:
+                break
+            skipped += len(updates)
+            if len(updates) < self.startup_sync_limit:
+                break
+        return skipped
+
+    def _fetch_updates_batch(
+        self,
+        offset: int,
+        limit: int,
+        timeout: int,
+    ) -> list[Dict[str, Any]]:
         params = {
-            "offset": self._poll_offset,
-            "limit": self.polling_limit,
-            "timeout": self.polling_timeout,
+            "offset": offset,
+            "limit": limit,
+            "timeout": timeout,
         }
-        result = self._api_get_json("/bot/getUpdates", params=params, timeout=self.polling_timeout + 5)
+        result = self._api_get_json(
+            "/bot/getUpdates",
+            params=params,
+            timeout=max(timeout + 5, self.request_timeout),
+        )
 
         if not isinstance(result, dict):
             return []
@@ -302,11 +357,22 @@ class WxFileHelperAdapter:
         for item in updates:
             if not isinstance(item, dict):
                 continue
-            update_id = item.get("update_id")
-            if isinstance(update_id, int):
+            update_id = self._as_int(item.get("update_id"))
+            if update_id is not None:
                 self._poll_offset = max(self._poll_offset, update_id + 1)
             valid_updates.append(item)
         return valid_updates
+
+    @staticmethod
+    def _as_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        text = str(value or "").strip()
+        if text.isdigit():
+            return int(text)
+        return None
 
     def _api_get_json(
         self,

@@ -72,10 +72,13 @@ class MessageNormalizer:
 
         # 2. 确保 ToWxid 始终是字符串
         to_wxid = message.get("ToWxid", {})
+        if to_wxid in (None, "", {}) and isinstance(message.get("ToUserName"), dict):
+            to_wxid = message.get("ToUserName", {})
         if isinstance(to_wxid, dict):
             message["ToWxid"] = to_wxid.get("string", "")
         else:
             message["ToWxid"] = str(to_wxid) if to_wxid else ""
+        message.pop("ToUserName", None)
 
         return message
 

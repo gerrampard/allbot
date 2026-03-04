@@ -35,6 +35,9 @@ psutil~=5.9.8
 tomli~=2.0.1
 tomli_w~=1.0.0
 tomlkit~=0.12.0
+python-dateutil~=2.9.0.post0  # Reminder 插件依赖（dateutil）
+SpeechRecognition~=3.10.4     # Dify 插件依赖（speech_recognition）
+gTTS~=2.5.1                   # Dify 插件依赖（gtts）
 
 # 新增 websockets 依赖
 websockets>=10.0

@@ -1,71 +1,175 @@
-"""消息监听模块
-
-负责WebSocket消息监听和Redis消息消费
 """
+@input: WebSocket 消息流、Redis 队列、消息数据库、XYBot 实例与 resource/robot_stat.json（用于兜底 WS key）
+@output: 标准化 AddMsgs 消息入队并驱动插件处理
+@position: bot_core 启动流程中的消息接收与分发入口
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
+
 import asyncio
 import json
 import time
 import traceback
-from typing import Dict, Any
 from pathlib import Path
+from typing import Any, Callable, Dict
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-import websockets
 import redis.asyncio as aioredis
+import websockets
 from loguru import logger
 
 from utils.config_manager import AppConfig
 from utils.message_normalizer import MessageNormalizer
+from bot_core.ws_message_normalizer import normalize_addmsg, normalize_ws_payloads
 
 
-QUEUE_NAME = 'allbot'  # 自定义队列名
+QUEUE_NAME = "allbot"
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _append_query_key(url: str, key: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if key and "key" not in query:
+        query["key"] = [key]
+    encoded_query = urlencode({k: v[-1] if isinstance(v, list) else v for k, v in query.items()})
+    return urlunparse(parsed._replace(query=encoded_query))
+
+
+def _has_query_key(url: str) -> bool:
+    return "key" in parse_qs(urlparse(url).query)
+
+
+def _extract_url_key(url: str) -> str:
+    return _first_non_empty(parse_qs(urlparse(url).query).get("key", [""])[0])
+
+
+def _mask_key(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 6:
+        return "*" * len(value)
+    return f"{value[:3]}***{value[-2:]}"
+
+
+def _parse_invalid_status_payload(error: Exception) -> Dict[str, Any]:
+    response = getattr(error, "response", None)
+    if response is None:
+        return {}
+    status_code = getattr(response, "status_code", None)
+    body = getattr(response, "body", b"")
+    if isinstance(body, bytearray):
+        body = bytes(body)
+    if isinstance(body, bytes):
+        try:
+            body = body.decode("utf-8", errors="ignore")
+        except Exception:
+            body = ""
+    payload: Dict[str, Any] = {}
+    if isinstance(body, str) and body.strip().startswith("{"):
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+    payload["_status_code"] = status_code
+    return payload
 
 
 async def message_consumer(xybot, redis, message_db):
-    """消息消费者，从Redis队列中消费消息
-
-    Args:
-        xybot: XYBot 实例
-        redis: Redis 客户端
-        message_db: 消息数据库实例
-    """
     while True:
         _, msg_json = await redis.blpop(QUEUE_NAME)
         message = json.loads(msg_json)
-        logger.info(f"消息已出队并开始处理，队列: {QUEUE_NAME}，消息ID: {message.get('MsgId') or message.get('msgId')}")
+        logger.info("消息已出队并开始处理，队列: {}，消息ID: {}", QUEUE_NAME, message.get("MsgId") or message.get("msgId"))
         try:
             await xybot.process_message(message)
-        except Exception as e:
-            logger.error(f"消息处理异常: {e}")
+        except Exception as error:
+            logger.error("消息处理异常: {}", error)
 
 
-async def listen_ws_messages(xybot, ws_url, redis, message_db):
-    """WebSocket 客户端，实时接收消息并处理，自动重连，依赖官方ping/pong心跳机制
-
-    Args:
-        xybot: XYBot 实例
-        ws_url: WebSocket URL
-        redis: Redis 客户端
-        message_db: 消息数据库实例
-    """
-    reconnect_interval = 5  # 断开后重连间隔秒数
+async def listen_ws_messages(xybot, ws_url: str | Callable[[], str], redis, message_db):
+    reconnect_interval = 5
     reconnect_count = 0
+
+    async def _maybe_relogin_869(reason: str) -> bool:
+        bot = getattr(xybot, "bot", None)
+        if bot is None:
+            return False
+        if str(getattr(bot, "protocol_version", "") or "").lower() != "869":
+            return False
+        if not hasattr(bot, "try_wakeup_login"):
+            return False
+
+        lock = getattr(xybot, "_869_relogin_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(xybot, "_869_relogin_lock", lock)
+
+        async with lock:
+            try:
+                if await bot.is_logged_in(getattr(bot, "wxid", None) or None):
+                    return False
+            except Exception:
+                pass
+
+            try:
+                from bot_core.status_manager import update_bot_status
+                update_bot_status(
+                    "offline",
+                    f"869 掉线，尝试免扫码唤醒登录：{reason}",
+                    {"protocol_version": "869", "wxid": getattr(bot, "wxid", "") or ""},
+                )
+            except Exception:
+                pass
+
+            try:
+                ok = await bot.try_wakeup_login()
+            except Exception as error:
+                logger.warning("869 免扫码唤醒登录失败: {}", error)
+                ok = False
+
+            if ok:
+                try:
+                    from bot_core.status_manager import update_bot_status
+                    update_bot_status(
+                        "online",
+                        f"869 免扫码唤醒登录成功：{getattr(bot, 'nickname', '') or ''}",
+                        {
+                            "protocol_version": "869",
+                            "nickname": getattr(bot, "nickname", "") or "",
+                            "wxid": getattr(bot, "wxid", "") or "",
+                            "alias": getattr(bot, "alias", "") or "",
+                        },
+                    )
+                except Exception:
+                    pass
+            return ok
 
     while True:
         try:
-            if not ws_url.startswith("ws://") and not ws_url.startswith("wss://"):
-                ws_url = "ws://" + ws_url
+            runtime_ws_url = ws_url() if callable(ws_url) else ws_url
+            if not runtime_ws_url.startswith("ws://") and not runtime_ws_url.startswith("wss://"):
+                runtime_ws_url = "ws://" + runtime_ws_url
 
-            logger.info(f"正在连接到 WebSocket 服务器: {ws_url}")
+            logger.info("正在连接到 WebSocket 服务器: {}", runtime_ws_url)
 
-            async with websockets.connect(ws_url, ping_interval=30, ping_timeout=10) as websocket:
-                logger.success(f"已连接到 WebSocket 消息服务器: {ws_url}")
-                reconnect_count = 0  # 成功连接后重置重连计数
+            async with websockets.connect(runtime_ws_url, ping_interval=30, ping_timeout=10) as websocket:
+                logger.success("已连接到 WebSocket 消息服务器: {}", runtime_ws_url)
+                reconnect_count = 0
 
                 while True:
                     try:
                         msg = await websocket.recv()
 
-                        # 检查服务端主动关闭连接的业务消息
                         if isinstance(msg, str) and ("已关闭连接" in msg or "connection closed" in msg.lower()):
                             logger.warning("检测到服务端主动关闭连接消息，主动关闭本地ws，准备重连...")
                             await websocket.close()
@@ -80,148 +184,217 @@ async def listen_ws_messages(xybot, ws_url, redis, message_db):
                             if not msg.strip():
                                 logger.debug("收到WebSocket心跳包或空消息")
                             else:
-                                logger.info(f"收到非JSON格式的WebSocket消息: {msg_preview}")
+                                logger.info("收到非JSON格式的WebSocket消息: {}", msg_preview)
 
-                        except Exception as e:
-                            logger.error(f"处理ws消息出错: {e}, 原始内容: {msg[:100]}...")
+                        except Exception as error:
+                            logger.error("处理ws消息出错: {}, 原始内容: {}...", error, msg[:100])
 
-                    except websockets.exceptions.ConnectionClosed as e:
-                        logger.error(f"WebSocket 连接已关闭: {e} (code={getattr(e, 'code', None)}, reason={getattr(e, 'reason', None)})，检测到断链，{reconnect_interval}秒后重连...")
+                    except websockets.exceptions.ConnectionClosed as error:
+                        logger.error(
+                            "WebSocket 连接已关闭: {} (code={}, reason={})，{}秒后重连...",
+                            error,
+                            getattr(error, "code", None),
+                            getattr(error, "reason", None),
+                            reconnect_interval,
+                        )
                         break
 
-                    except Exception as e:
-                        logger.error(f"WebSocket消息主循环异常: {e}\n{traceback.format_exc()}，{reconnect_interval}秒后重连...")
+                    except Exception as error:
+                        logger.error("WebSocket消息主循环异常: {}\n{}", error, traceback.format_exc())
                         break
 
-        except Exception as e:
+        except websockets.exceptions.InvalidStatus as error:
             reconnect_count += 1
-            logger.error(f"WebSocket 连接失败: {type(e).__name__}: {e}，第{reconnect_count}次重连，{reconnect_interval}秒后重试...\n{traceback.format_exc()}")
+            payload = _parse_invalid_status_payload(error)
+            status_code = payload.get("_status_code")
+            code = payload.get("Code")
+            text = _first_non_empty(payload.get("Text"), payload.get("Message"), str(error))
+            if status_code == 200 and str(code) == "300":
+                masked_key = _mask_key(_extract_url_key(runtime_ws_url))
+                wait_seconds = max(reconnect_interval, 8)
+                # 869：若已掉线则尝试免扫码唤醒登录（避免一直空转重连）
+                relogin_ok = await _maybe_relogin_869(text)
+                if relogin_ok:
+                    reconnect_count = 0
+                    wait_seconds = reconnect_interval
+                logger.warning(
+                    "869 WS 长链接未就绪（key={}）: {}，第{}次重试，{}秒后继续",
+                    masked_key,
+                    text,
+                    reconnect_count,
+                    wait_seconds,
+                )
+                await asyncio.sleep(wait_seconds)
+                continue
+
+            logger.error(
+                "WebSocket 握手失败: {}，第{}次重连，{}秒后重试...",
+                error,
+                reconnect_count,
+                reconnect_interval,
+            )
+            await asyncio.sleep(reconnect_interval)
+
+        except Exception as error:
+            reconnect_count += 1
+            logger.error(
+                "WebSocket 连接失败: {}: {}，第{}次重连，{}秒后重试...\n{}",
+                type(error).__name__,
+                error,
+                reconnect_count,
+                reconnect_interval,
+                traceback.format_exc(),
+            )
             await asyncio.sleep(reconnect_interval)
 
 
 async def _process_ws_message(data: Dict[str, Any], xybot, redis, message_db):
-    """处理WebSocket消息
+    bot_wxid = getattr(xybot.bot, "wxid", "")
 
-    Args:
-        data: 消息数据
-        xybot: XYBot 实例
-        redis: Redis 客户端
-        message_db: 消息数据库实例
-    """
-    if isinstance(data, dict) and "AddMsgs" in data:
-        # 标准格式消息
-        messages = data["AddMsgs"]
-        for message in messages:
-            await _save_and_enqueue_message(message, redis, message_db, is_standard_format=True)
-    else:
-        # 自定义格式消息，使用 MessageNormalizer 转换
-        ws_msg = data
-        ws_msgs = [ws_msg] if isinstance(ws_msg, dict) else ws_msg
-
-        for msg in ws_msgs:
-            # 使用 MessageNormalizer 进行格式转换
-            addmsg = MessageNormalizer.convert_to_standard_format(msg, getattr(xybot.bot, "wxid", ""))
-            logger.info(f"ws消息适配为AddMsgs: {json.dumps(addmsg, ensure_ascii=False)}")
-            await _save_and_enqueue_message(addmsg, redis, message_db, is_standard_format=False)
+    for raw_message in normalize_ws_payloads(data):
+        addmsg = normalize_addmsg(raw_message, bot_wxid)
+        if not addmsg.get("FromUserName", {}).get("string") or not addmsg.get("Content", {}).get("string"):
+            logger.warning(
+                "WS 消息归一化后关键字段为空，raw keys={} raw_preview={}",
+                list(raw_message.keys()) if isinstance(raw_message, dict) else type(raw_message),
+                (json.dumps(raw_message, ensure_ascii=False)[:600] if isinstance(raw_message, dict) else str(raw_message)[:200]),
+            )
+        logger.debug("ws消息适配为AddMsgs: {}", json.dumps(addmsg, ensure_ascii=False))
+        await _save_and_enqueue_message(addmsg, redis, message_db, is_standard_format=True)
 
 
 async def _save_and_enqueue_message(message: Dict[str, Any], redis, message_db, is_standard_format: bool):
-    """保存消息到数据库并入队
-
-    Args:
-        message: 消息数据
-        redis: Redis 客户端
-        message_db: 消息数据库实例
-        is_standard_format: 是否为标准格式
-    """
-    # 使用 MessageNormalizer 提取消息字段
     fields = MessageNormalizer.extract_message_fields(message, is_standard_format)
+    sender = fields["sender_wxid"]
+    is_group = bool(message.get("IsGroup")) or (isinstance(sender, str) and sender.endswith("@chatroom"))
 
-    # 保存到数据库
     await message_db.save_message(
-        msg_id=fields["msg_id"],
-        sender_wxid=fields["sender_wxid"],
+        msg_id=int(fields["msg_id"] or 0),
+        sender_wxid=sender,
         from_wxid=fields["from_wxid"],
-        msg_type=fields["msg_type"],
+        msg_type=int(fields["msg_type"] or 0),
         content=fields["content"],
-        is_group=False  # 可根据业务调整
+        is_group=is_group,
     )
 
-    # 入队
     await redis.rpush(QUEUE_NAME, json.dumps(message, ensure_ascii=False))
-    logger.info(f"消息已入队到队列 {QUEUE_NAME}，消息ID: {fields['msg_id']}")
+    logger.info("消息已入队到队列 {}，消息ID: {}", QUEUE_NAME, fields["msg_id"])
 
 
 class MessageListener:
-    """消息监听器"""
-
     def __init__(self, xybot, config: AppConfig, script_dir: Path):
-        """初始化消息监听器
-
-        Args:
-            xybot: XYBot 实例
-            config: 应用配置对象
-            script_dir: 脚本目录路径
-        """
         self.xybot = xybot
         self.config = config
         self.script_dir = script_dir
         self.redis = None
         self.consumer_tasks = []
 
+    def _load_robot_stat_key(self) -> tuple[str, str]:
+        stat_path = self.script_dir / "resource" / "robot_stat.json"
+        if not stat_path.exists():
+            return "", ""
+        try:
+            with open(stat_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception:
+            return "", ""
+        if not isinstance(data, dict):
+            return "", ""
+        return _first_non_empty(data.get("token_key")), _first_non_empty(data.get("auth_key"))
+
+    def _resolve_869_ws_key(self) -> str:
+        bot = getattr(self.xybot, "bot", None)
+        token_key = _first_non_empty(getattr(bot, "token_key", ""))
+
+        auth_key = _first_non_empty(getattr(bot, "auth_key", ""))
+        if not auth_key:
+            auth_keys = getattr(bot, "auth_keys", None)
+            if isinstance(auth_keys, list) and auth_keys:
+                auth_key = _first_non_empty(auth_keys[0])
+
+        if not token_key and not auth_key:
+            stat_token, stat_auth = self._load_robot_stat_key()
+            token_key = token_key or stat_token
+            auth_key = auth_key or stat_auth
+
+        return _first_non_empty(token_key, auth_key, self.config.wechat_api.admin_key)
+
     async def start_listening(self, message_db):
-        """启动消息监听
-
-        Args:
-            message_db: 消息数据库实例
-        """
         api_config = self.config.wechat_api
+        protocol_version = str(self.config.protocol.version).lower()
 
-        # 初始化 Redis 连接
         redis_url = f"redis://{api_config.redis_host}:{api_config.redis_port}"
         self.redis = aioredis.from_url(redis_url, decode_responses=True)
 
-        # 启动消息消费者
-        num_consumers = 1  # 可根据需要调整
-        self.consumer_tasks = [
-            asyncio.create_task(message_consumer(self.xybot, self.redis, message_db))
-            for _ in range(num_consumers)
-        ]
+        self.consumer_tasks = [asyncio.create_task(message_consumer(self.xybot, self.redis, message_db)) for _ in range(1)]
 
         try:
-            # 根据配置决定是否启用 WebSocket
             if api_config.enable_websocket:
-                ws_url = self._get_websocket_url()
-                logger.info(f"WebSocket 消息推送地址: {ws_url}")
+                if protocol_version == "869":
+                    login_task = getattr(self.xybot, "_wechat_login_task", None)
+                    if isinstance(login_task, asyncio.Task) and not login_task.done():
+                        logger.info("869 主 WS 将在扫码登录成功后启动（当前仅运行消息消费者）")
+                        try:
+                            login_ok = await login_task
+                        except Exception as error:
+                            logger.error("登录任务异常，停止启动 869 主 WS: {}", error)
+                            await asyncio.Event().wait()
+                            return
+
+                        if not login_ok:
+                            logger.warning("登录未成功，停止启动 869 主 WS（请重新扫码登录）")
+                            await asyncio.Event().wait()
+                            return
+
+                ws_url = self._get_websocket_url
+                logger.info("WebSocket 消息推送地址: {}", ws_url())
                 await listen_ws_messages(self.xybot, ws_url, self.redis, message_db)
             else:
                 logger.info("WebSocket 消息通道已禁用（enable-websocket = false），消息消费者将继续从 Redis 队列读取")
-                # 阻塞当前协程，保持消费者持续运行
                 await asyncio.Event().wait()
-
         finally:
             for task in self.consumer_tasks:
                 task.cancel()
             await asyncio.gather(*self.consumer_tasks, return_exceptions=True)
 
-    def _get_websocket_url(self) -> str:
-        """获取WebSocket URL
-
-        Returns:
-            WebSocket URL
-        """
+    def _build_default_ws_url(self) -> str:
         api_config = self.config.wechat_api
-        ws_url = api_config.ws_url
+        protocol_version = str(self.config.protocol.version).lower()
+        if protocol_version == "869":
+            return f"ws://{api_config.host}:{api_config.port}/ws/GetSyncMsg"
+        return f"ws://{api_config.host}:{api_config.port}/ws"
 
-        # 如果配置中没有 ws_url，构造默认值
-        if not ws_url or not isinstance(ws_url, str):
-            server_host = api_config.host
-            server_port = api_config.ws_port or api_config.port
-            ws_url = f"ws://{server_host}:{server_port}/ws"
-            logger.warning(f"未在配置中找到有效的 ws-url，使用构造值: {ws_url}")
+    def _normalize_869_ws_url(self, ws_url: str) -> str:
+        runtime_url = ws_url.strip()
+        if not runtime_url:
+            runtime_url = self._build_default_ws_url()
 
-        # 添加 wxid 到 URL
-        wxid = self.xybot.bot.wxid
+        if runtime_url.endswith("/api/ws"):
+            runtime_url = runtime_url[:-7] + "/ws/GetSyncMsg"
+        elif runtime_url.endswith("/ws"):
+            runtime_url = runtime_url + "/GetSyncMsg"
+        elif "/ws/GetSyncMsg" not in runtime_url:
+            runtime_url = runtime_url.rstrip("/") + "/ws/GetSyncMsg"
+
+        active_key = self._resolve_869_ws_key()
+        if active_key and not _has_query_key(runtime_url):
+            runtime_url = _append_query_key(runtime_url, active_key)
+
+        return runtime_url
+
+    def _get_websocket_url(self) -> str:
+        api_config = self.config.wechat_api
+        protocol_version = str(self.config.protocol.version).lower()
+
+        ws_url = api_config.ws_url if isinstance(api_config.ws_url, str) else ""
+        if not ws_url:
+            ws_url = self._build_default_ws_url()
+            logger.warning("未在配置中找到有效的 ws-url，使用构造值: {}", ws_url)
+
+        if protocol_version == "869":
+            return self._normalize_869_ws_url(ws_url)
+
+        wxid = getattr(self.xybot.bot, "wxid", "")
         if wxid and not ws_url.rstrip("/").endswith(wxid):
             ws_url = ws_url.rstrip("/") + f"/{wxid}"
 

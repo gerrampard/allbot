@@ -1,8 +1,12 @@
 """主编排器模块
 
-重构后的 bot_core() 函数，使用组合模式将各个功能模块组合起来
+@input: main_config.toml 配置、WechatAPI 客户端、适配器与消息队列
+@output: 完成服务初始化并进入消息处理循环（同时异步执行登录）
+@position: bot_core 入口编排层（初始化顺序与并发策略的唯一来源）
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import os
+import asyncio
 from pathlib import Path
 
 from loguru import logger
@@ -17,32 +21,18 @@ from bot_core.status_manager import update_bot_status, set_bot_instance
 
 
 async def bot_core():
-    """Bot 核心启动函数 - 重构后的清晰编排器
+    """Bot 核心启动函数 - 重构后的清晰编排器"""
 
-    职责：
-    1. 设置工作目录
-    2. 加载配置
-    3. 初始化客户端
-    4. 处理登录
-    5. 初始化服务
-    6. 启动消息监听
-
-    Returns:
-        XYBot 实例
-    """
-    # ========== 1. 设置工作目录 ==========
     script_dir = Path(__file__).resolve().parent.parent
     os.chdir(script_dir)
 
     update_bot_status("initializing", "系统初始化中")
 
     try:
-        # ========== 2. 加载配置 ==========
         logger.info("📋 开始加载配置...")
         app_config = get_config()
         logger.success("✅ 配置加载完成")
 
-        # ========== 3. 初始化客户端 ==========
         logger.info("🔌 开始初始化WechatAPI客户端...")
         client_initializer = ClientInitializer(app_config, script_dir)
         bot = client_initializer.initialize_client()
@@ -50,46 +40,52 @@ async def bot_core():
 
         update_bot_status("waiting_login", "等待微信登录")
 
-        # ========== 4. 处理登录 ==========
-        logger.info("🔐 开始处理微信登录...")
+        logger.info("🔐 启动微信登录任务（不阻塞适配器消息）...")
         login_handler = WechatLoginHandler(
             bot=bot,
             api_host=app_config.wechat_api.host,
             api_port=app_config.wechat_api.port,
             script_dir=script_dir,
-            update_status_callback=update_bot_status
+            update_status_callback=update_bot_status,
         )
 
-        await login_handler.handle_login(app_config.xybot.enable_wechat_login)
-        logger.success("✅ 登录处理完成")
+        login_task: asyncio.Task | None = None
+        if app_config.xybot.enable_wechat_login:
+            login_task = asyncio.create_task(login_handler.handle_login(True))
 
-        # ========== 5. 初始化服务 ==========
+            def _log_login_task_done(task: asyncio.Task):
+                try:
+                    task.result()
+                    logger.success("✅ 登录处理完成（后台任务）")
+                except Exception as error:  # pragma: no cover
+                    logger.error("❌ 登录任务失败: {}", error)
+
+            login_task.add_done_callback(_log_login_task_done)
+        else:
+            await login_handler.handle_login(False)
+            logger.success("✅ 登录处理完成（已禁用登录）")
+
         logger.info("⚙️ 开始初始化服务...")
         service_initializer = ServiceInitializer(bot, app_config, script_dir)
         xybot, message_db, keyval_db, notification_service = await service_initializer.initialize_all_services()
 
-        # 设置机器人实例到管理后台
         set_bot_instance(xybot)
-
-        # 启动自动重启监控器
         service_initializer.start_auto_restart_monitor()
 
-        # ========== 5.1 启动适配器 ==========
         logger.info("🔌 开始启动适配器...")
         adapter_infos = start_adapters(script_dir)
         logger.success(f"✅ 已启动 {len(adapter_infos)} 个适配器")
 
         logger.success("✅ 服务初始化完成")
-
         update_bot_status("ready", "机器人已准备就绪")
         logger.success("🚀 开始处理消息")
 
-        # ========== 6. 启动消息监听 ==========
         logger.info("👂 开始启动消息监听...")
         message_listener = MessageListener(xybot, app_config, script_dir)
+        if login_task is not None:
+            xybot._wechat_login_task = login_task
         await message_listener.start_listening(message_db)
 
-        # 正常情况下不会执行到这里，因为消息监听会阻塞
         return xybot
 
     except Exception as e:

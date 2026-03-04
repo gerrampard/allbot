@@ -1,13 +1,17 @@
-"""客户端初始化模块
-
-负责初始化WechatAPI客户端和相关路由器
+"""
+@input: AppConfig 配置与 ReplyRouter/ReplyDispatcher 组件
+@output: 根据协议版本初始化微信客户端并接入回复路由
+@position: bot_core 启动流程中的客户端构建层
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
 from WechatAPI.Client import WechatAPIClient
+from WechatAPI.Client869 import Client869
 from utils.reply_router import ReplyRouter, ReplyDispatcher, has_enabled_adapters
 from utils.config_manager import AppConfig
 
@@ -25,7 +29,7 @@ class ClientInitializer:
         self.config = config
         self.script_dir = script_dir
 
-    def initialize_client(self) -> WechatAPIClient:
+    def initialize_client(self) -> Any:
         """初始化WechatAPI客户端
 
         Returns:
@@ -40,8 +44,17 @@ class ClientInitializer:
         protocol_version = self.config.protocol.version.lower()
         logger.info(f"使用协议版本: {protocol_version}")
 
-        # 实例化 WechatAPIClient
-        bot = WechatAPIClient(api_config.host, api_config.port, protocol_version=protocol_version)
+        if protocol_version == "869":
+            bot = Client869(
+                api_config.host,
+                api_config.port,
+                protocol_version=protocol_version,
+                admin_key=api_config.admin_key,
+                ws_url=api_config.ws_url,
+            )
+            logger.success("✅ 成功加载 Client869 客户端")
+        else:
+            bot = WechatAPIClient(api_config.host, api_config.port, protocol_version=protocol_version)
         logger.success(f"✅ 成功加载统一 WechatAPIClient 客户端，protocol_version={getattr(bot, 'protocol_version', None)}")
 
         # 设置客户端属性
@@ -54,7 +67,7 @@ class ClientInitializer:
 
         return bot
 
-    def _setup_reply_router(self, bot: WechatAPIClient):
+    def _setup_reply_router(self, bot: Any):
         """设置回复路由器
 
         Args:

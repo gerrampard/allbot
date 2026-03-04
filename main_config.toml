@@ -1,14 +1,15 @@
 # 协议版本选择
 [Protocol]
-version = "pad"            # 协议版本，可选值: "ipad", "pad", "mac", "ipad2", "car" 或 "win"
+version = "869"            # 协议版本，可选值: "869", "ipad", "pad", "mac", "ipad2", "car" 或 "win"
 
 [Framework]
 type = "wechat"
 
 [WechatAPIServer]
-host = "127.0.0.1"         # WechatAPI服务器地址，默认127.0.0.1，可修改为其他地址
-port = 9000                 # WechatAPI服务器端口，默认9000，如有冲突可修改
+host = "127.0.0.1"         # WechatAPI服务器地址，默认127.0.0.1，部署时按实际环境修改
+port = 9000                # WechatAPI服务器端口，默认9000，部署时按实际环境修改
 mode = "debug"             # 运行模式：release(生产环境)，debug(调试模式)
+admin-key = ""             # 869 管理密钥，部署时填写
 
 # Redis 设置
 redis-host = "127.0.0.1"   # Redis服务器地址，本地使用127.0.0.1
@@ -17,11 +18,11 @@ redis-password = ""         # Redis密码，如果有设置密码则填写
 redis-db = 0                # Redis数据库编号，默认0
 
 # WebSocket 设置
-enable-websocket = false    # 是否启用 WebSocket 消息接收，默认关闭
-ws-url = "ws://127.0.0.1:9000/api/ws"  # WebSocket 服务器地址，例如: "ws://127.0.0.1:8080/ws"
+enable-websocket = true     # 是否启用 WebSocket 消息接收
+ws-url = "ws://127.0.0.1:9000/ws/GetSyncMsg"  # 869 建议使用 /ws/GetSyncMsg，部署时按实际环境修改，key 由程序自动追加
 
 # RabbitMQ 设置
-enable-rabbitmq = false     # 是否启用 RabbitMQ 消息接收，默认开启
+enable-rabbitmq = true      # 是否启用 RabbitMQ 消息接收，默认开启
 rabbitmq-host = "127.0.0.1"
 rabbitmq-port = 5672
 rabbitmq-user = "guest"
@@ -34,7 +35,7 @@ enabled = true             # 是否启用管理后台
 host = "0.0.0.0"           # 管理后台监听地址，使用0.0.0.0允许外部访问
 port = 9090                # 管理后台端口
 username = "admin"         # 管理后台登录用户名
-password = "admin"     # 管理后台登录密码
+password = "change_me"     # 管理后台登录密码
 debug = true               # 是否开启调试模式
 log_level = "INFO"         # 日志级别，可选值: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 
@@ -58,7 +59,7 @@ memory_low_threshold_mb = 500 # 可用内存警告阈值（MB）
 # XYBot 核心设置
 [XYBot]
 version = "v2.0.0"                    # 版本号，请勿修改
-enable-wechat-login = false           # 是否启用微信登录，设为false时框架将在无微信登录情况下启动
+enable-wechat-login = true            # 869 需要启用登录以获取 token_key 并更新 wxid/profile
 ignore-protection = false             # 是否忽略风控保护机制，建议保持false
 enable-group-wakeup = false
 group-wakeup-words = [
@@ -77,7 +78,7 @@ robot-wxids = [
 # 可选值: "", "https://ghfast.top/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/"
 # 空字符串表示直连不使用加速
 # 注意: 如果使用加速服务，请确保以"/"结尾
-github-proxy = "https://git.yylx.win"
+github-proxy = ""
 
 # SQLite数据库地址，一般无需修改
 XYBotDB-url = "sqlite:///database/xybot.db"

@@ -8,6 +8,11 @@ AllBot 管理后台 - 核心应用设置模块
 - 认证与授权
 - 中间件注册
 - 静态文件与模板引擎设置
+
+@input: main_config.toml 管理后台配置、bot_core 写入的 bot_status.json、运行时 bot_instance
+@output: FastAPI app 初始化与 app.state 依赖注入（含 bot 状态读取函数）
+@position: 管理后台应用装配入口，负责将 bot_core 状态桥接到前端
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import os
 import sys
@@ -103,6 +108,29 @@ def get_bot_instance():
     if bot_instance is None:
         logger.debug("bot 实例未设置（可能处于启动阶段）")
     return bot_instance
+
+
+def get_bot_status() -> dict:
+    """兼容旧模块的 bot 状态获取入口。
+
+    优先走 `app.state.get_bot_status()`（来自 init_app_state 注入），
+    若管理后台尚未初始化则回退读取状态文件。
+    """
+    global app
+
+    try:
+        if app is not None and hasattr(app, "state") and callable(getattr(app.state, "get_bot_status", None)):
+            data = app.state.get_bot_status()
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+
+    try:
+        from utils.bot_status import get_bot_status as _get_file_status
+        data = _get_file_status()
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def load_config():
@@ -391,21 +419,93 @@ def init_app_state(app: FastAPI):
 
     # 4. 注入 bot 状态获取函数
     def get_bot_status_safe():
-        """安全获取 bot 状态，兼容 is_login 属性和 is_logged_in() 方法"""
-        if not bot_instance:
-            return {"is_login": False, "wxid": ""}
+        """安全获取 bot 状态（供 /api/bot/status 与前台轮询使用）。
 
-        # 优先使用 is_logged_in() 方法，其次尝试 is_login 属性
-        is_login = False
-        if hasattr(bot_instance, 'is_logged_in') and callable(bot_instance.is_logged_in):
-            is_login = bot_instance.is_logged_in()
-        elif hasattr(bot_instance, 'is_login'):
-            is_login = bot_instance.is_login
+        约定：优先读取 bot_core 写入的 `admin/bot_status.json`（含 status/details/qrcode_url 等），
+        并在缺失字段时合并运行时 bot_instance/bot_client 的 profile 信息（wxid/nickname/alias）。
+        """
+        status_data: dict[str, Any] = {}
+        try:
+            from utils.bot_status import get_bot_status as _get_file_status
+            if callable(_get_file_status):
+                loaded = _get_file_status() or {}
+                if isinstance(loaded, dict):
+                    status_data = loaded
+        except Exception:
+            status_data = {}
 
-        return {
-            "is_login": is_login,
-            "wxid": getattr(bot_instance, "wxid", "")
-        }
+        # 回退读取项目根目录 bot_status.json（避免运行期路径差异导致前端状态丢失）
+        if not status_data:
+            fallback_paths = [
+                Path(admin_dir) / "bot_status.json",
+                Path(admin_dir).parent / "bot_status.json",
+            ]
+            for path in fallback_paths:
+                if not path.exists():
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as file:
+                        loaded = json.load(file)
+                    if isinstance(loaded, dict):
+                        status_data = loaded
+                        break
+                except Exception:
+                    continue
+
+        runtime_instance = bot_instance
+        runtime_client = getattr(runtime_instance, "bot", None) if runtime_instance else None
+
+        # 兜底状态：没有状态文件时至少给出 offline
+        status_data.setdefault("status", "offline")
+
+        raw_status = str(status_data.get("status", "") or "").strip().lower()
+        if raw_status in {"initializing", "initialized", "switching"}:
+            status_data["status"] = "offline"
+        elif raw_status == "adapter_mode":
+            status_data["status"] = "ready"
+        elif raw_status == "scanning":
+            status_data["status"] = "waiting_login"
+        elif raw_status == "success":
+            status_data["status"] = "online"
+        elif not raw_status:
+            status_data["status"] = "offline"
+
+        # 合并协议版本
+        protocol_version = ""
+        if runtime_client is not None:
+            protocol_version = str(getattr(runtime_client, "protocol_version", "") or "").lower()
+        elif runtime_instance is not None:
+            protocol_version = str(getattr(runtime_instance, "protocol_version", "") or "").lower()
+        if protocol_version:
+            status_data.setdefault("protocol_version", protocol_version)
+
+        # 合并 profile 信息（优先不覆盖状态文件已有值）
+        for field in ("wxid", "nickname", "alias"):
+            if status_data.get(field):
+                continue
+            value = ""
+            if runtime_client is not None:
+                value = str(getattr(runtime_client, field, "") or "")
+            if not value and runtime_instance is not None:
+                value = str(getattr(runtime_instance, field, "") or "")
+            if value:
+                status_data[field] = value
+
+        # 合并设备信息，供 system 页展示
+        for field in ("device_name", "device_id", "device_type"):
+            if status_data.get(field):
+                continue
+            value = ""
+            if runtime_client is not None:
+                value = str(getattr(runtime_client, field, "") or "")
+            if value:
+                status_data[field] = value
+
+        # login_time：前台 system.html 使用，优先沿用 timestamp
+        if "login_time" not in status_data and isinstance(status_data.get("timestamp"), (int, float)):
+            status_data["login_time"] = status_data["timestamp"]
+
+        return status_data
 
     app.state.get_bot_status = get_bot_status_safe
     logger.info("✓ 已注入 get_bot_status")

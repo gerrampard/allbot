@@ -1,5 +1,9 @@
 #!/bin/bash
 set -e
+# @input: /app/main_config.toml, /app/requirements.txt, /etc/redis/redis.conf
+# @output: 启动容器内 Redis，并运行 /app/main.py
+# @position: Docker 容器入口脚本（安装依赖 -> 启动 Redis -> 启动主程序）
+# @auto-doc: Update header and related docs when startup flow changes
 if ! python3 -c "import sys; assert sys.version_info >= (3,11,3)"; then
 python -m pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple --upgrade pip
 pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
@@ -13,7 +17,7 @@ pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/si
     python3.11 --version
 fi
 cd ..
-echo "启动py虚拟环境...请确保xbot配置文件已经填好，默认远程协议，远程redis"
+echo "启动 Python 运行环境...请确保 /app/main_config.toml 已按当前部署环境填写"
 #python3 -m venv venv
 sleep 5
 #echo "进入虚拟环境安装依赖..."

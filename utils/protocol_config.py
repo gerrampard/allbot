@@ -1,6 +1,8 @@
-"""协议配置管理模块
-
-提供协议版本到 API 前缀的映射配置，避免硬编码
+"""
+@input: 协议版本字符串与调用侧 API 前缀需求
+@output: 统一协议前缀映射与协议合法性判定
+@position: 协议抽象层的轻量配置中心
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 from typing import Dict
 
@@ -18,6 +20,7 @@ class ProtocolConfig:
         "car": "/api",        # Car 协议使用 /api 前缀
         "win": "/api",        # Win 协议使用 /api 前缀
         "855": "/api",        # 855 协议使用 /api 前缀
+        "869": "/api",        # 869 协议使用 /api 前缀（WS 由消息监听器单独处理）
     }
 
     # 默认 API 前缀（当协议版本未知时使用）

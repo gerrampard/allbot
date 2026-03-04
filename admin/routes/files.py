@@ -7,6 +7,7 @@ import os
 import json
 import time
 import zipfile
+import mimetypes
 from pathlib import Path
 from typing import List
 from fastapi import Request, UploadFile, File, Form, Depends
@@ -24,6 +25,25 @@ def register_files_routes(app, current_dir):
         current_dir: 当前目录路径
     """
     from admin.utils import require_auth, validate_path_safety
+
+    @app.get("/media/files/{filename:path}")
+    async def public_media_file(filename: str):
+        """公开访问 files 目录中的媒体文件（仅单文件名，禁止路径穿越）"""
+        safe_name = os.path.basename(filename or "")
+        if not safe_name or safe_name != filename:
+            return JSONResponse(status_code=400, content={"success": False, "message": "非法文件名"})
+
+        root_dir = Path(current_dir).parent
+        file_path = root_dir / "files" / safe_name
+        if not file_path.exists() or not file_path.is_file():
+            return JSONResponse(status_code=404, content={"success": False, "message": "媒体文件不存在"})
+
+        media_type, _ = mimetypes.guess_type(str(file_path))
+        return FileResponse(
+            path=str(file_path),
+            filename=safe_name,
+            media_type=media_type or "application/octet-stream",
+        )
 
     @app.get("/api/files/list")
     async def api_files_list(request: Request, path: str = "/", page: int = 1, limit: int = 100, username: str = Depends(require_auth)):

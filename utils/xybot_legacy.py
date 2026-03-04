@@ -1,3 +1,10 @@
+"""
+@input: WechatAPIClient/Client869 实例、原始 AddMsg 消息字典与本地 files 缓存目录
+@output: 旧版 XYBot 消息处理实现（图片/语音/XML/文件等），供 utils.xybot.core 兼容委托
+@position: 历史兼容层：承载未拆分的消息处理逻辑与媒体落盘（files/）
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
+
 import asyncio
 import base64
 import hashlib
@@ -10,7 +17,7 @@ import time
 import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from loguru import logger
 
@@ -716,6 +723,8 @@ class XYBot:
             ats = []
         message["Ats"] = ats if ats and ats[0] != "" else []
 
+        bot_wxid = (getattr(self.bot, "wxid", None) or self.wxid or "").strip()
+
         await self.msg_db.save_message(
             msg_id=int(message.get("MsgId", 0)),
             sender_wxid=message["SenderWxid"],
@@ -725,7 +734,7 @@ class XYBot:
             is_group=message["IsGroup"],
         )
 
-        if self.wxid in message.get("Ats", []):
+        if bot_wxid and bot_wxid in message.get("Ats", []):
             logger.info(
                 "收到被@消息: 消息ID:{} 来自:{} 发送人:{} @:{} 内容:{}",
                 message.get("MsgId", ""),
@@ -819,7 +828,7 @@ class XYBot:
             img_element = root.find("img")
             if img_element is not None:
                 aeskey = img_element.get("aeskey")
-                cdnmidimgurl = img_element.get("cdnmidimgurl")
+                cdnmidimgurl = img_element.get("cdnbigimgurl") or img_element.get("cdnmidimgurl")
                 length = img_element.get("length")
                 md5 = img_element.get("md5")
                 logger.debug(
@@ -1412,6 +1421,28 @@ class XYBot:
         message["Content"] = text
         message["Quote"] = quote_message
 
+        # 引用消息同样可能包含 atuserlist（例如：@机器人后再引用）。统一解析并填充 Ats。
+        # 仅依赖 MsgSource，不强行从 Content 猜测，避免误判。
+        try:
+            msg_source_root = ET.fromstring(message.get("MsgSource", ""))
+            at_list = (
+                msg_source_root.find("atuserlist").text
+                if msg_source_root.find("atuserlist") is not None
+                else ""
+            )
+        except Exception:
+            at_list = ""
+
+        parsed_ats: list[str]
+        if at_list:
+            parsed_ats = [item for item in at_list.strip(",").split(",") if item]
+        else:
+            parsed_ats = []
+        if parsed_ats:
+            message["Ats"] = parsed_ats
+        else:
+            message.setdefault("Ats", [])
+
         logger.info(
             "收到引用消息: 消息ID:{} 来自:{} 发送人:{} 内容:{} 引用:{}",
             message.get("MsgId", ""),
@@ -1771,9 +1802,11 @@ class XYBot:
         if not content:
             return False
 
+        bot_wxid = (getattr(self.bot, "wxid", None) or self.wxid or "").strip()
+
         # 移除@部分，以便正确匹配唤醒词或触发词
         # 检查消息是否包含Ats字段，并且机器人的wxid在Ats列表中
-        if "Ats" in message and self.wxid in message["Ats"]:
+        if bot_wxid and "Ats" in message and bot_wxid in message["Ats"]:
             # 尝试从消息内容中移除@部分
             # 从main_config.toml中读取机器人名称列表
             robot_names = []
@@ -1805,7 +1838,7 @@ class XYBot:
                     # 异步获取群成员列表
                     members = await self.get_chatroom_member_list(message["FromWxid"])
                     for member in members:
-                        if member.get("wxid") == self.wxid and member.get("nickname"):
+                        if member.get("wxid") == bot_wxid and member.get("nickname"):
                             robot_names.append(member["nickname"])
                             logger.debug(
                                 f"从群成员列表中获取到机器人的群昵称: {member['nickname']}"
@@ -2233,6 +2266,7 @@ class XYBot:
             return True
 
         content = message.get("Content", "").strip()
+        bot_wxid = (getattr(self.bot, "wxid", None) or self.wxid or "").strip()
         # 检查消息是否以任一唤醒词开头
         for wakeup_word in self.group_wakeup_words:
             if content.lower().startswith(wakeup_word.lower()):
@@ -2244,10 +2278,10 @@ class XYBot:
                 )
 
                 # 将机器人的wxid添加到Ats列表中，模拟@机器人的效果
-                if self.wxid and self.wxid not in message.get("Ats", []):
-                    message["Ats"] = message.get("Ats", []) + [self.wxid]
+                if bot_wxid and bot_wxid not in message.get("Ats", []):
+                    message["Ats"] = message.get("Ats", []) + [bot_wxid]
                     logger.debug(
-                        f"将机器人wxid {self.wxid} 添加到Ats列表中，模拟@机器人效果"
+                        f"将机器人wxid {bot_wxid} 添加到Ats列表中，模拟@机器人效果"
                     )
 
                 # 尝试找到并调用Dify插件处理该消息

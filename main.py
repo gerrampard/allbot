@@ -1,3 +1,10 @@
+"""
+@input: 启动配置、bot_core 编排器、管理后台与系统监控组件
+@output: 全局启动流程与运行态守护逻辑
+@position: 项目主入口，负责系统初始化和生命周期管理
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
+
 import asyncio
 import os
 import sys
@@ -140,6 +147,8 @@ async def main():
                     "host": app_config.wechat_api.host,
                     "port": app_config.wechat_api.port,
                     "mode": app_config.wechat_api.mode,
+                    "ws-url": app_config.wechat_api.ws_url,
+                    "admin-key": app_config.wechat_api.admin_key,
                     "redis-host": app_config.wechat_api.redis_host,
                     "redis-port": app_config.wechat_api.redis_port,
                     "redis-password": app_config.wechat_api.redis_password,

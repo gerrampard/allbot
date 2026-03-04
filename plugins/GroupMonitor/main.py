@@ -1,9 +1,14 @@
+"""
+@input: bot 实例（需支持 get_chatroom_member_list）、插件配置 config.toml、sqlite3 本地库
+@output: 周期性更新群成员表并在检测退群时发送提醒
+@position: 插件 - 群成员监控（退群提醒）
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
+
 import asyncio
 import sqlite3
 import os
 import tomllib
-import json
-import aiohttp
 from datetime import datetime
 from typing import List, Dict
 
@@ -81,65 +86,17 @@ class GroupMonitorPlugin(PluginBase):
     async def get_member_avatar(self, group_id: str, member_id: str) -> str:
         """获取群成员头像URL"""
         try:
-            # 确定API基础路径
-            api_base = f"http://{self.bot.ip}:{self.bot.port}"
+            if not self.bot or not hasattr(self.bot, "get_chatroom_member_list"):
+                return ""
 
-            # 根据协议版本选择正确的API前缀
-            try:
-                with open("main_config.toml", "rb") as f:
-                    config = tomllib.load(f)
-                    protocol_version = config.get("Protocol", {}).get("version", "855")
-
-                    # 根据协议版本选择前缀
-                    if protocol_version == "849":
-                        api_prefix = "/VXAPI"
-                    else:  # 855或ipad
-                        api_prefix = "/api"
-            except Exception as e:
-                logger.warning(f"读取协议版本失败，使用默认前缀: {e}")
-                # 默认使用855的前缀
-                api_prefix = "/api"
-
-            # 构造请求参数
-            json_param = {"QID": group_id, "Wxid": self.bot.wxid}
-
-            async with aiohttp.ClientSession() as session:
-                response = await session.post(
-                    f"{api_base}{api_prefix}/Group/GetChatRoomMemberDetail",
-                    json=json_param,
-                    headers={"Content-Type": "application/json"}
-                )
-
-                # 检查响应状态
-                if response.status != 200:
-                    logger.error(f"获取群成员列表失败: HTTP状态码 {response.status}")
-                    return ""
-
-                # 解析响应数据
-                json_resp = await response.json()
-
-                if json_resp.get("Success"):
-                    # 获取群成员列表
-                    group_data = json_resp.get("Data", {})
-
-                    # 正确提取ChatRoomMember列表
-                    if "NewChatroomData" in group_data and "ChatRoomMember" in group_data["NewChatroomData"]:
-                        group_members = group_data["NewChatroomData"]["ChatRoomMember"]
-
-                        if isinstance(group_members, list) and group_members:
-                            # 在群成员列表中查找指定成员
-                            for member_data in group_members:
-                                # 尝试多种可能的字段名
-                                member_wxid = member_data.get("UserName") or member_data.get("Wxid") or member_data.get("wxid") or ""
-
-                                if member_wxid == member_id:
-                                    # 获取头像地址
-                                    avatar_url = member_data.get("BigHeadImgUrl") or member_data.get("SmallHeadImgUrl") or ""
-                                    logger.debug(f"成功获取到群成员 {member_id} 的头像地址: {avatar_url}")
-                                    return avatar_url
-                else:
-                    error_msg = json_resp.get("Message") or json_resp.get("message") or "未知错误"
-                    logger.warning(f"获取群 {group_id} 成员列表失败: {error_msg}")
+            group_members = await self.bot.get_chatroom_member_list(group_id)
+            if isinstance(group_members, list) and group_members:
+                for member_data in group_members:
+                    member_wxid = member_data.get("UserName") or member_data.get("Wxid") or member_data.get("wxid") or ""
+                    if member_wxid == member_id:
+                        avatar_url = member_data.get("BigHeadImgUrl") or member_data.get("SmallHeadImgUrl") or ""
+                        logger.debug(f"成功获取到群成员 {member_id} 的头像地址: {avatar_url}")
+                        return avatar_url
         except Exception as e:
             logger.error(f"获取群成员头像失败: {e}")
 
@@ -264,67 +221,20 @@ class GroupMonitorPlugin(PluginBase):
                     if self.debug:
                         logger.info(f"正在获取群 {group_id} 的成员列表...")
 
-                    # 获取群成员列表
-                    api_base = f"http://{self.bot.ip}:{self.bot.port}"
+                    if not self.bot or not hasattr(self.bot, "get_chatroom_member_list"):
+                        logger.warning("bot 未初始化或不支持 get_chatroom_member_list，跳过群成员同步")
+                        continue
 
-                    # 根据协议版本选择正确的API前缀
-                    try:
-                        with open("main_config.toml", "rb") as f:
-                            config = tomllib.load(f)
-                            protocol_version = config.get("Protocol", {}).get("version", "855")
+                    members = await self.bot.get_chatroom_member_list(group_id)
+                    if self.debug:
+                        logger.info(f"成功获取群 {group_id} 的成员列表，成员数量：{len(members) if isinstance(members, list) else 0}")
 
-                            # 根据协议版本选择前缀
-                            if protocol_version == "849":
-                                api_prefix = "/VXAPI"
-                            else:  # 855或ipad
-                                api_prefix = "/api"
-                    except Exception as e:
-                        logger.warning(f"读取协议版本失败，使用默认前缀: {e}")
-                        # 默认使用855的前缀
-                        api_prefix = "/api"
-
-                    # 构造请求参数
-                    json_param = {"QID": group_id, "Wxid": self.bot.wxid}
-
-                    async with aiohttp.ClientSession() as session:
-                        response = await session.post(
-                            f"{api_base}{api_prefix}/Group/GetChatRoomMemberDetail",
-                            json=json_param,
-                            headers={"Content-Type": "application/json"}
-                        )
-
-                        # 检查响应状态
-                        if response.status != 200:
-                            logger.error(f"获取群成员列表失败: HTTP状态码 {response.status}")
-                            continue
-
-                        # 解析响应数据
-                        json_resp = await response.json()
-
-                        if json_resp.get("Success"):
-                            # 获取群成员列表
-                            group_data = json_resp.get("Data", {})
-
-                            # 正确提取ChatRoomMember列表
-                            if "NewChatroomData" in group_data and "ChatRoomMember" in group_data["NewChatroomData"]:
-                                members = group_data["NewChatroomData"]["ChatRoomMember"]
-
-                                if self.debug:
-                                    logger.info(f"成功获取群 {group_id} 的成员列表，成员数量：{len(members) if isinstance(members, list) else 0}")
-
-                                if isinstance(members, list) and members:
-                                    # 更新成员数据并检查退群成员
-                                    left_members = await self.update_members(group_id, members)
-
-                                    if self.debug:
-                                        logger.info(f"群 {group_id} 成员数据更新完成，退群成员数：{len(left_members) if left_members else 0}")
-                                else:
-                                    logger.warning(f"群 {group_id} 获取到的成员列表为空或格式不正确")
-                            else:
-                                logger.warning(f"群 {group_id} 数据结构中缺少ChatRoomMember字段")
-                        else:
-                            error_msg = json_resp.get("Message") or json_resp.get("message") or "未知错误"
-                            logger.warning(f"获取群 {group_id} 成员列表失败: {error_msg}")
+                    if isinstance(members, list) and members:
+                        left_members = await self.update_members(group_id, members)
+                        if self.debug:
+                            logger.info(f"群 {group_id} 成员数据更新完成，退群成员数：{len(left_members) if left_members else 0}")
+                    else:
+                        logger.warning(f"群 {group_id} 获取到的成员列表为空或格式不正确")
                 except Exception as e:
                     logger.error(f"更新群 {group_id} 成员列表失败: {e}")
                     logger.error(f"错误详情: {str(e)}")

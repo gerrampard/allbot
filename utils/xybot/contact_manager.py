@@ -1,6 +1,8 @@
-"""联系人管理器模块
-
-负责获取和更新联系人信息（群成员列表、联系人详情等）
+"""
+@input: WechatAPI 客户端、main_config.toml（协议前缀兜底）、contacts_db 持久层
+@output: 联系人/群成员标准化结果与联系人信息更新写库
+@position: XYBot 联系人域服务（屏蔽协议差异，向上层提供统一联系人能力）
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import json
 import tomllib
@@ -31,6 +33,16 @@ class ContactManager:
         if not group_wxid.endswith("@chatroom"):
             logger.error(f"无效的群ID: {group_wxid}，只有群聊才能获取成员列表")
             return []
+
+        # 优先走客户端封装方法（对 869 可自动适配大小写与 key 参数）
+        if hasattr(self.bot, "get_chatroom_member_list"):
+            try:
+                members = await self.bot.get_chatroom_member_list(group_wxid)
+                if isinstance(members, list):
+                    logger.info(f"通过客户端方法获取群 {group_wxid} 成员列表成功，共 {len(members)} 个成员")
+                    return self._normalize_members(members)
+            except Exception as e:
+                logger.warning(f"客户端方法获取群 {group_wxid} 成员列表失败，将回退直接HTTP调用: {e}")
 
         try:
             logger.info(f"开始获取群 {group_wxid} 的成员列表")

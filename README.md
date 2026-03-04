@@ -58,7 +58,7 @@ Python 3.11+ | FastAPI | SQLite + Redis | RabbitMQ | APScheduler | Loguru | Boot
 
 | 平台 | 协议 | 说明 |
 |------|------|------|
-| **微信** | pad/ipad/mac/win 等 | 多协议版本支持 |
+| **微信** | 869/pad/ipad/mac/win 等 | 多协议版本支持 |
 | **QQ** | NTQQ | 私聊和群聊 |
 | **Telegram** | Bot API | 长轮询/Webhook |
 | **Web** | WebSocket/HTTP | 管理后台聊天 |
@@ -106,6 +106,9 @@ cp main_config.template.toml main_config.toml
 
 # 启动服务
 docker-compose up -d
+
+# 说明：docker-compose.yml 默认挂载当前项目目录到 /app
+# 请确保在本项目根目录执行，容器才会与本地代码/配置保持同步
 
 # 查看日志
 docker-compose logs -f

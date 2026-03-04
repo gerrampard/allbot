@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-配置管理器模块
-
-提供统一的配置管理功能，支持TOML文件、环境变量覆盖和配置验证。
+@input: main_config.toml 与环境变量配置项
+@output: 统一 AppConfig 对象与配置校验结果
+@position: 全项目配置装载与协议能力开关的核心入口
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 
 import os
@@ -35,6 +36,7 @@ class WechatAPIConfig:
     mode: str = "release"
     enable_websocket: bool = False
     ws_url: str = ""
+    admin_key: str = ""
     enable_rabbitmq: bool = True
     rabbitmq_host: str = "127.0.0.1"
     rabbitmq_port: int = 5672
@@ -229,6 +231,8 @@ class ConfigManager:
             # 微信API配置
             "WECHAT_API_HOST": ["WechatAPIServer", "host"],
             "WECHAT_API_PORT": ["WechatAPIServer", "port"],
+            "WECHAT_API_ADMIN_KEY": ["WechatAPIServer", "admin-key"],
+            "WECHAT_API_WS_URL": ["WechatAPIServer", "ws-url"],
             "REDIS_HOST": ["WechatAPIServer", "redis-host"],
             "REDIS_PORT": ["WechatAPIServer", "redis-port"],
             "REDIS_PASSWORD": ["WechatAPIServer", "redis-password"],
@@ -318,6 +322,7 @@ class ConfigManager:
                 ),
                 redis_db=api_config.get("redis-db", config.wechat_api.redis_db),
                 ws_url=api_config.get("ws-url", config.wechat_api.ws_url),
+                admin_key=api_config.get("admin-key", config.wechat_api.admin_key),
                 enable_rabbitmq=api_config.get(
                     "enable-rabbitmq", config.wechat_api.enable_rabbitmq
                 ),
@@ -480,8 +485,9 @@ class ConfigManager:
             raise ConfigurationException("配置对象未初始化")
 
         # 验证协议版本
-        valid_protocols = ["pad", "mac", "ipad"]
-        if self._config.protocol.version not in valid_protocols:
+        valid_protocols = ["849", "855", "869", "pad", "ipad", "ipad2", "mac", "car", "win"]
+        protocol_version = str(self._config.protocol.version).lower().strip()
+        if protocol_version not in valid_protocols:
             raise ConfigurationException(
                 f"无效的协议版本: {self._config.protocol.version}，支持的版本: {valid_protocols}",
                 config_key="protocol.version",

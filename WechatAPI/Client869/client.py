@@ -10,6 +10,7 @@ import base64
 import hashlib
 import io
 import os
+import re
 import string
 import time
 from random import choice
@@ -52,6 +53,10 @@ KEY_PROFILE_PHONE_CANDIDATES = ("BindMobile", "bindMobile", "Phone", "phone")
 KEY_SEND_CLIENT_MSG_ID_CANDIDATES = ("ClientMsgid", "ClientMsgId", "clientMsgId", "client_msg_id")
 KEY_SEND_CREATE_TIME_CANDIDATES = ("Createtime", "CreateTime", "createTime", "create_time")
 KEY_SEND_NEW_MSG_ID_CANDIDATES = ("NewMsgId", "newMsgId", "new_msg_id")
+
+DEFAULT_VIDEO_THUMB_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAPAAAACgCAIAAAC9uXYyAAABxklEQVR4nO3SQQ3AIADAwDFNiMUbZjBBQtLcKeijY679QcX/OgBuMjQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUg41RwLn0Myb+wAAAABJRU5ErkJggg=="
+)
 
 
 def _extract_text(value: Any, default: str = "") -> str:
@@ -255,7 +260,21 @@ class Client869:
         return bool(prefix) and prefix != "wechat"
 
     def _resolve_active_key(self) -> str:
-        return self.token_key or self.auth_key
+        return self.token_key or self.poll_key or self.auth_key
+
+    def _resolve_request_key(self, path: str, provided: Optional[str]) -> str:
+        """解析 869 请求 key。
+
+        约定：
+        - 业务接口优先使用授权码（token_key/poll_key/auth_key），避免误用 admin_key；
+        - /admin/* 仅在调用方未显式传 key 时才自动使用 admin_key。
+        """
+        if provided is not None:
+            return provided
+        request_path = self._coerce_path(path).lower()
+        if request_path.startswith("/admin/"):
+            return self.admin_key or ""
+        return self._resolve_active_key()
 
     async def ensure_auth_key(self) -> str:
         if self.auth_key:
@@ -375,7 +394,7 @@ class Client869:
         request_path = self._coerce_path(path)
         query: Dict[str, Any] = dict(params or {})
 
-        active_key = key if key is not None else self._resolve_active_key()
+        active_key = self._resolve_request_key(path, key)
         if active_key:
             query["key"] = active_key
 
@@ -1031,17 +1050,89 @@ class Client869:
         return result
 
     async def get_chatroom_member_list(self, group_wxid: str) -> list[Dict[str, Any]]:
-        # 869 Swagger: /group/GetChatroomMemberDetail（注意 room 大小写）
-        detail_data = await self.call_path("/group/GetChatroomMemberDetail", body={"ChatRoomName": group_wxid})
-        if isinstance(detail_data, dict):
-            new_data = detail_data.get("NewChatroomData")
+        def _normalize_chatroom_member_item(item: Dict[str, Any]) -> Dict[str, Any]:
+            wxid = _extract_text(
+                _pick_first(
+                    item,
+                    (
+                        "UserName",
+                        "userName",
+                        "user_name",
+                        "Wxid",
+                        "wxid",
+                    ),
+                    "",
+                )
+            ).strip()
+            nickname = _extract_text(
+                _pick_first(
+                    item,
+                    (
+                        "NickName",
+                        "nickName",
+                        "nickname",
+                        "nick_name",
+                        "display_name",
+                        "DisplayName",
+                    ),
+                    "",
+                )
+            ).strip()
+            big_avatar = _extract_text(
+                _pick_first(item, ("BigHeadImgUrl", "big_head_img_url", "bigHeadImgUrl"), ""),
+                "",
+            ).strip()
+            small_avatar = _extract_text(
+                _pick_first(item, ("SmallHeadImgUrl", "small_head_img_url", "smallHeadImgUrl"), ""),
+                "",
+            ).strip()
+
+            normalized: Dict[str, Any] = dict(item)
+            if wxid:
+                normalized.setdefault("UserName", wxid)
+                normalized.setdefault("Wxid", wxid)
+                normalized.setdefault("wxid", wxid)
+            if nickname:
+                normalized.setdefault("NickName", nickname)
+                normalized.setdefault("nickname", nickname)
+            if big_avatar:
+                normalized.setdefault("BigHeadImgUrl", big_avatar)
+            if small_avatar:
+                normalized.setdefault("SmallHeadImgUrl", small_avatar)
+            if not normalized.get("avatar"):
+                normalized["avatar"] = big_avatar or small_avatar
+            return normalized
+
+        def _extract_members(payload: Any) -> list[Dict[str, Any]]:
+            if not isinstance(payload, dict):
+                return []
+
+            data_payload = payload.get("Data")
+            if isinstance(data_payload, dict):
+                payload = data_payload
+
+            member_data = payload.get("member_data")
+            if isinstance(member_data, dict):
+                members = member_data.get("chatroom_member_list")
+                if isinstance(members, list):
+                    return [x for x in members if isinstance(x, dict)]
+
+            new_data = payload.get("NewChatroomData")
             if isinstance(new_data, dict):
                 members = new_data.get("ChatRoomMember")
                 if isinstance(members, list):
-                    return members
-            members = detail_data.get("ChatRoomMember") or detail_data.get("MemberList")
+                    return [x for x in members if isinstance(x, dict)]
+
+            members = payload.get("ChatRoomMember") or payload.get("MemberList") or payload.get("ChatRoomMemberList")
             if isinstance(members, list):
-                return members
+                return [x for x in members if isinstance(x, dict)]
+            return []
+
+        # 869 Swagger: /group/GetChatroomMemberDetail
+        detail_data = await self.call_path("/group/GetChatroomMemberDetail", body={"ChatRoomName": group_wxid})
+        members = _extract_members(detail_data)
+        if members:
+            return [_normalize_chatroom_member_item(item) for item in members]
 
         # 兼容兜底：部分实现仍从 GetChatRoomInfo 返回成员列表
         payload = {"ChatRoomWxIdList": [group_wxid]}
@@ -1049,21 +1140,81 @@ class Client869:
         if isinstance(data, dict):
             members = data.get("MemberList") or data.get("ChatRoomMemberList")
             if isinstance(members, list):
-                return members
+                return [_normalize_chatroom_member_item(x) for x in members if isinstance(x, dict)]
             if isinstance(data.get("ChatRoomInfo"), list):
                 room_info = data.get("ChatRoomInfo")[0] if data.get("ChatRoomInfo") else {}
                 room_members = room_info.get("MemberList")
                 if isinstance(room_members, list):
-                    return room_members
+                    return [_normalize_chatroom_member_item(x) for x in room_members if isinstance(x, dict)]
         return []
 
     async def get_chatroom_members(self, group_wxid: str) -> list[Dict[str, Any]]:
         return await self.get_chatroom_member_list(group_wxid)
 
+    async def get_chatroom_info(self, chatroom: str) -> Dict[str, Any]:
+        """兼容旧客户端：获取群聊信息。"""
+        payload = {"ChatRoomWxIdList": [chatroom]}
+        data = await self.call_path("/group/GetChatRoomInfo", body=payload)
+        if isinstance(data, dict):
+            if isinstance(data.get("ChatRoomInfo"), list) and data["ChatRoomInfo"]:
+                first = data["ChatRoomInfo"][0]
+                return first if isinstance(first, dict) else {}
+            members = data.get("MemberList")
+            if isinstance(members, list):
+                return {"MemberList": members}
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
+        return {}
+
+    async def get_chatroom_announce(self, chatroom: str) -> Dict[str, Any]:
+        """兼容旧客户端：获取群公告。"""
+        data = await self.call_path("/group/SetGetChatRoomInfoDetail", body={"ChatRoomName": chatroom})
+        return data if isinstance(data, dict) else {"Data": data}
+
+    async def get_chatroom_qrcode(self, chatroom: str) -> Dict[str, Any]:
+        """兼容旧客户端：获取群二维码（base64）。"""
+        data = await self.call_path("/group/GetChatroomQrCode", body={"ChatRoomName": chatroom})
+        if isinstance(data, dict):
+            qr = data.get("qrcode")
+            if isinstance(qr, dict):
+                buffer = qr.get("buffer") or qr.get("Buffer")
+                if isinstance(buffer, str) and buffer:
+                    return {"base64": buffer, "description": data.get("revokeQrcodeWording") or data.get("description") or ""}
+            buffer = data.get("base64") or data.get("Base64")
+            if isinstance(buffer, str) and buffer:
+                return {"base64": buffer, "description": ""}
+        return {"Data": data}
+
+    async def add_chatroom_member(self, chatroom: str, wxid: str) -> bool:
+        """兼容旧客户端：添加群成员(群聊最多40人)。"""
+        payload = {"ChatRoomName": chatroom, "UserList": [wxid]}
+        data = await self.call_path("/group/AddChatRoomMembers", body=payload)
+        return self._looks_like_send_ack(data)
+
+    async def invite_chatroom_member(self, wxid: Union[str, list], chatroom: str) -> bool:
+        """兼容旧客户端：邀请群聊成员(群聊大于40人)。"""
+        user_list = [wxid] if isinstance(wxid, str) else [str(x) for x in wxid]
+        payload = {"ChatRoomName": chatroom, "UserList": user_list}
+        data = await self.call_path("/group/InviteChatroomMembers", body=payload)
+        return self._looks_like_send_ack(data)
+
     async def add_friend(self, wxid: str, verify_msg: str = "你好") -> Dict[str, Any]:
         payload = {"UserName": wxid, "Tg": verify_msg, "FromScene": 0}
         data = await self.call_path("/friend/VerifyUser", body=payload)
         return data if isinstance(data, dict) else {}
+
+    async def accept_friend(self, scene: int, v1: str, v2: str) -> bool:
+        """兼容旧客户端：接受好友请求。"""
+        payload = {
+            "OpCode": 3,
+            "Scene": int(scene),
+            "V3": str(v1 or ""),
+            "V4": str(v2 or ""),
+            "VerifyContent": "",
+            "ChatRoomUserName": "",
+        }
+        data = await self.call_path("/friend/AgreeAdd", body=payload)
+        return self._looks_like_send_ack(data)
 
     async def delete_friend(self, wxid: str) -> bool:
         payload = {"Wxid": wxid}
@@ -1080,6 +1231,14 @@ class Client869:
         if isinstance(data, list):
             return data
         return []
+
+    async def download_emoji(self, md5: str) -> Dict[str, Any]:
+        """兼容旧客户端：下载表情（869 需要传 msg_type=47 的 xml_content）。"""
+        if "<" not in str(md5):
+            logger.warning("Client869 download_emoji 收到非 XML 参数，无法调用 869 DownloadEmojiGif")
+            return {"Success": False, "Message": "download_emoji 需要表情消息 XML（msg_type=47）"}
+        data = await self.call_path("/message/DownloadEmojiGif", body={"xml_content": str(md5)})
+        return data if isinstance(data, dict) else {"Data": data}
 
     def _coerce_binary_to_base64(self, payload: Union[str, bytes, os.PathLike]) -> str:
         if isinstance(payload, bytes):
@@ -1098,6 +1257,27 @@ class Client869:
             return base64.b64encode(payload.encode("utf-8")).decode()
 
         raise ValueError("不支持的二进制数据类型")
+
+    def _build_video_thumb_bytes(self, image: Union[str, bytes, os.PathLike]) -> bytes:
+        thumb_payload = image
+        if isinstance(thumb_payload, str):
+            normalized = thumb_payload.strip().lower()
+            if normalized in {"", "none", "null"}:
+                thumb_payload = b""
+            elif normalized.endswith("/fallback.png") or normalized.endswith("\\fallback.png") or normalized == "fallback.png":
+                thumb_payload = b""
+
+        thumb_bytes = b""
+        if thumb_payload:
+            try:
+                thumb_bytes = base64.b64decode(self._coerce_binary_to_base64(thumb_payload))
+            except Exception:
+                thumb_bytes = b""
+
+        if thumb_bytes:
+            return thumb_bytes
+
+        return base64.b64decode(DEFAULT_VIDEO_THUMB_BASE64)
 
     @staticmethod
     def _coerce_optional_bool(value: Any) -> Optional[bool]:
@@ -1230,6 +1410,10 @@ class Client869:
         data = await self.call_path("/message/SendTextMessage", body=payload)
         return self._extract_send_tuple(data)
 
+    async def send_text(self, wxid: str, content: str, at: Union[list[str], str] = "") -> Tuple[int, int, int]:
+        """兼容旧插件：send_text -> send_text_message。"""
+        return await self.send_text_message(wxid, content, at)
+
     async def send_at_message(self, wxid: str, content: str, at: list[str]) -> Tuple[int, int, int]:
         return await self.send_text_message(wxid, content, at)
 
@@ -1238,6 +1422,48 @@ class Client869:
             return await self.reply_router.send_image(wxid, image)
 
         image_base64 = self._coerce_binary_to_base64(image)
+
+        try:
+            upload_data = await self.call_path(
+                "/message/UploadImageToCDN",
+                body={"imageContent": image_base64},
+            )
+        except Exception as exc:
+            logger.warning("Client869 UploadImageToCDN 调用异常，回退 SendImageMessage: {}", exc)
+            upload_data = None
+
+        if isinstance(upload_data, dict):
+            aes_key = upload_data.get("aesKey") or upload_data.get("AesKey") or upload_data.get("aeskey") or ""
+            cdn = upload_data.get("cdnResponse") if isinstance(upload_data.get("cdnResponse"), dict) else {}
+            cdn_mid = ""
+            if isinstance(cdn, dict):
+                cdn_mid = (
+                    cdn.get("cdnMidImgUrl")
+                    or cdn.get("cdnBigImgUrl")
+                    or cdn.get("cdnThumbImgUrl")
+                    or cdn.get("fileID")
+                    or ""
+                )
+            recv_len = _safe_int((cdn.get("recvLen") if isinstance(cdn, dict) else 0) or upload_data.get("totalLen") or 0, 0)
+            if aes_key and cdn_mid:
+                forward_payload = {
+                    "ForwardImageList": [
+                        {
+                            "AesKey": str(aes_key),
+                            "CdnMidImgUrl": str(cdn_mid),
+                            "CdnMidImgSize": int(recv_len),
+                            "CdnThumbImgSize": int(recv_len),
+                            "ToUserName": wxid,
+                        }
+                    ]
+                }
+                forward_data = await self.call_path("/message/ForwardImageMessage", body=forward_payload)
+                return (
+                    forward_data
+                    if isinstance(forward_data, dict)
+                    else {"Data": forward_data, "upload": upload_data}
+                )
+
         payload = {
             "MsgItem": [
                 {
@@ -1247,42 +1473,12 @@ class Client869:
                 }
             ]
         }
-
         try:
-            primary_data = await self.call_path("/message/SendImageMessage", body=payload)
+            fallback_data = await self.call_path("/message/SendImageMessage", body=payload)
         except Exception as exc:
             logger.warning("Client869 SendImageMessage 调用异常，回退 SendImageNewMessage: {}", exc)
             fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
-            return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
-
-        if not isinstance(primary_data, (dict, list)):
-            logger.warning(
-                "Client869 SendImageMessage 返回非结构化响应(type={})，回退 SendImageNewMessage",
-                type(primary_data).__name__,
-            )
-            fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
-            return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
-
-        primary_success = self._extract_send_success_flag(primary_data)
-        if primary_success is False:
-            logger.warning("Client869 SendImageMessage 返回 isSendSuccess=False，回退 SendImageNewMessage")
-            try:
-                fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
-                fallback_success = self._extract_send_success_flag(fallback_data)
-                if fallback_success is False:
-                    logger.warning("Client869 SendImageNewMessage 仍返回 isSendSuccess=False")
-                return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
-            except Exception as exc:
-                logger.warning("Client869 SendImageNewMessage 调用异常，保留原始 SendImageMessage 响应: {}", exc)
-        elif primary_success is None and not self._looks_like_send_ack(primary_data):
-            logger.warning("Client869 SendImageMessage 返回缺少发送确认字段，回退 SendImageNewMessage")
-            try:
-                fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
-                return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
-            except Exception as exc:
-                logger.warning("Client869 SendImageNewMessage 调用异常，保留原始 SendImageMessage 响应: {}", exc)
-
-        return primary_data if isinstance(primary_data, dict) else {"Data": primary_data}
+        return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
 
     async def send_voice_message(
         self,
@@ -1316,15 +1512,101 @@ class Client869:
             return await self.reply_router.send_video(wxid, video, image)
 
         video_bytes = base64.b64decode(self._coerce_binary_to_base64(video))
-        thumb_bytes = base64.b64decode(self._coerce_binary_to_base64(image)) if image else b""
+        thumb_bytes = self._build_video_thumb_bytes(image)
 
         payload = {
             "ToUserName": wxid,
             "VideoData": list(video_bytes),
             "ThumbData": list(thumb_bytes),
         }
-        data = await self.call_path("/message/CdnUploadVideo", body=payload)
-        return data if isinstance(data, dict) else {"Data": data}
+        upload_data = await self.call_path("/message/CdnUploadVideo", body=payload)
+
+        def pick_video_field(src: Any, *keys: str) -> str:
+            if not isinstance(src, dict):
+                return ""
+            for key in keys:
+                value = src.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            return ""
+
+        candidates: list[dict] = []
+        if isinstance(upload_data, dict):
+            candidates.append(upload_data)
+            inner = upload_data.get("resp") if isinstance(upload_data.get("resp"), dict) else None
+            if isinstance(inner, dict):
+                candidates.append(inner)
+            nested = upload_data.get("Data") if isinstance(upload_data.get("Data"), dict) else None
+            if isinstance(nested, dict):
+                candidates.append(nested)
+        elif isinstance(upload_data, list) and upload_data and isinstance(upload_data[0], dict):
+            candidates.append(upload_data[0])
+            inner = upload_data[0].get("resp") if isinstance(upload_data[0].get("resp"), dict) else None
+            if isinstance(inner, dict):
+                candidates.append(inner)
+
+        aes_key = ""
+        cdn_url = ""
+        play_length = 0
+        length = 0
+        thumb_len = 0
+        for item in candidates:
+            aes_key = aes_key or pick_video_field(
+                item,
+                "aesKey",
+                "AesKey",
+                "aeskey",
+                "FileAesKey",
+                "fileAesKey",
+                "file_aes_key",
+            )
+            cdn_url = cdn_url or pick_video_field(
+                item,
+                "cdnVideoUrl",
+                "CdnVideoUrl",
+                "cdnvideourl",
+                "fileId",
+                "fileID",
+                "FileID",
+                "FileId",
+            )
+            play_length = play_length or _safe_int(item.get("playLength") or item.get("PlayLength") or 0, 0)
+            length = length or _safe_int(
+                item.get("length")
+                or item.get("Length")
+                or item.get("totalLen")
+                or item.get("TotalLen")
+                or item.get("VideoDataSize")
+                or item.get("videoDataSize")
+                or 0,
+                0,
+            )
+            thumb_len = thumb_len or _safe_int(
+                item.get("cdnThumbLength")
+                or item.get("CdnThumbLength")
+                or item.get("ThumbDataSize")
+                or item.get("thumbDataSize")
+                or 0,
+                0,
+            )
+
+        if aes_key and cdn_url:
+            forward_payload = {
+                "ForwardVideoList": [
+                    {
+                        "AesKey": str(aes_key),
+                        "CdnVideoUrl": str(cdn_url),
+                        "CdnThumbLength": int(thumb_len),
+                        "Length": int(length),
+                        "PlayLength": int(play_length),
+                        "ToUserName": wxid,
+                    }
+                ]
+            }
+            forward_data = await self.call_path("/message/ForwardVideoMessage", body=forward_payload)
+            return forward_data if isinstance(forward_data, dict) else {"Data": forward_data, "upload": upload_data}
+
+        return upload_data if isinstance(upload_data, dict) else {"Data": upload_data}
 
     async def send_file_message(
         self,
@@ -1381,9 +1663,9 @@ class Client869:
             return await self.reply_router.send_link(wxid, url, title, description, thumb_url)
 
         xml_payload = (
-            "<msg><appmsg appid='' sdkver='0'>"
+            "<appmsg appid='' sdkver='0'>"
             f"<title>{title}</title><des>{description}</des><url>{url}</url>"
-            f"<thumburl>{thumb_url}</thumburl><type>5</type></appmsg></msg>"
+            f"<thumburl>{thumb_url}</thumburl><type>5</type></appmsg>"
         )
         payload = {
             "AppList": [
@@ -1455,6 +1737,67 @@ class Client869:
         _client_msg_id, _create_time, _new_msg_id = await self.send_app_message(wxid, xml, 6)
         return {"success": True, "client_msg_id": _client_msg_id, "create_time": _create_time, "new_msg_id": _new_msg_id}
 
+    async def send_cdn_file_msg(self, wxid: str, xml: str) -> Dict[str, Any]:
+        """兼容旧客户端：转发文件消息。"""
+        if self._should_route_via_reply_router(wxid):
+            client_msg_id, create_time, new_msg_id = await self.reply_router.send_text(wxid, xml, None)
+            return {"success": True, "client_msg_id": client_msg_id, "create_time": create_time, "new_msg_id": new_msg_id}
+        return await self._send_cdn_file_msg(wxid, xml)
+
+    @staticmethod
+    def _extract_attr_from_xml(xml: str, attr: str) -> str:
+        if not xml:
+            return ""
+        match = re.search(rf'\\b{re.escape(attr)}="([^"]+)"', xml)
+        return match.group(1).strip() if match else ""
+
+    async def send_cdn_img_msg(self, wxid: str, xml: str) -> Tuple[int, int, int]:
+        """兼容旧客户端：转发图片消息。"""
+        aes_key = self._extract_attr_from_xml(xml, "aeskey")
+        cdn_mid = self._extract_attr_from_xml(xml, "cdnbigimgurl") or self._extract_attr_from_xml(xml, "cdnmidimgurl")
+        length = _safe_int(self._extract_attr_from_xml(xml, "length"), 0)
+        if not aes_key or not cdn_mid:
+            raise ValueError("图片转发缺少 aeskey/cdnmidimgurl")
+
+        payload = {
+            "ForwardImageList": [
+                {
+                    "ToUserName": wxid,
+                    "AesKey": aes_key,
+                    "CdnMidImgUrl": cdn_mid,
+                    "CdnMidImgSize": int(length),
+                    "CdnThumbImgSize": 0,
+                }
+            ]
+        }
+        data = await self.call_path("/message/ForwardImageMessage", body=payload)
+        return self._extract_send_tuple(data if isinstance(data, dict) else {})
+
+    async def send_cdn_video_msg(self, wxid: str, xml: str) -> Tuple[int, int, int]:
+        """兼容旧客户端：转发视频消息。"""
+        aes_key = self._extract_attr_from_xml(xml, "aeskey") or self._extract_attr_from_xml(xml, "cdnthumbaeskey")
+        cdn_url = self._extract_attr_from_xml(xml, "cdnvideourl") or self._extract_attr_from_xml(xml, "cdnVideoUrl")
+        length = _safe_int(self._extract_attr_from_xml(xml, "length"), 0)
+        play_length = _safe_int(self._extract_attr_from_xml(xml, "playlength"), 0)
+        thumb_len = _safe_int(self._extract_attr_from_xml(xml, "cdnthumblength"), 0)
+        if not aes_key or not cdn_url:
+            raise ValueError("视频转发缺少 aeskey/cdnvideourl")
+
+        payload = {
+            "ForwardVideoList": [
+                {
+                    "ToUserName": wxid,
+                    "AesKey": aes_key,
+                    "CdnVideoUrl": cdn_url,
+                    "CdnThumbLength": int(thumb_len),
+                    "Length": int(length),
+                    "PlayLength": int(play_length),
+                }
+            ]
+        }
+        data = await self.call_path("/message/ForwardVideoMessage", body=payload)
+        return self._extract_send_tuple(data if isinstance(data, dict) else {})
+
     async def revoke_message(
         self,
         wxid: str,
@@ -1470,8 +1813,114 @@ class Client869:
             "ClientImgIdStr": str(client_msg_id),
             "IsImage": False,
         }
-        await self.call_path("/message/RevokeMsg", body=payload)
-        return True
+        try:
+            data = await self.call_path("/message/RevokeMsg", body=payload)
+            if self._looks_like_send_ack(data):
+                return True
+        except Exception as exc:
+            logger.warning("Client869 RevokeMsg 调用异常，尝试回退 RevokeMsgNew: {}", exc)
+
+        try:
+            data = await self.call_path("/message/RevokeMsgNew", body=payload)
+            return self._looks_like_send_ack(data)
+        except Exception as exc:
+            logger.error("Client869 RevokeMsgNew 调用异常: {}", exc)
+            return False
+
+    async def send_pat(self, chatroom_wxid: str, to_wxid: str, scene: int = 0) -> Dict[str, Any]:
+        """发送群拍一拍（仅群聊）。"""
+        payload = {
+            "ChatRoomName": chatroom_wxid,
+            "ToUserName": to_wxid,
+            "Scene": int(scene),
+        }
+        data = await self.call_path("/group/SendPat", body=payload)
+        return data if isinstance(data, dict) else {"Data": data}
+
+    async def get_my_qrcode(self, style: int = 0) -> str:
+        """兼容旧客户端：获取个人二维码(base64)。"""
+        data = await self.call_path("/user/GetMyQrCode", body={"Recover": False, "Style": int(style)})
+        if isinstance(data, dict):
+            qr = data.get("qrcode")
+            if isinstance(qr, dict):
+                buffer = qr.get("buffer") or qr.get("Buffer")
+                if isinstance(buffer, str):
+                    return buffer
+            buffer = data.get("base64") or data.get("Base64")
+            if isinstance(buffer, str):
+                return buffer
+        if isinstance(data, str):
+            return data
+        return ""
+
+    async def get_label_list(self, wxid: str = None) -> Dict[str, Any]:
+        """兼容旧客户端：获取标签列表。"""
+        data = await self.call_path("/label/GetContactLabelList", body={})
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return {"labelPairList": data}
+        return {"Data": data}
+
+    async def set_proxy(self, proxy: Any) -> bool:
+        """兼容旧客户端：设置代理。"""
+        proxy_value = ""
+        if isinstance(proxy, str):
+            proxy_value = proxy.strip()
+        else:
+            ip = str(getattr(proxy, "ip", "") or "")
+            port = str(getattr(proxy, "port", "") or "")
+            username = str(getattr(proxy, "username", "") or "")
+            password = str(getattr(proxy, "password", "") or "")
+            if ip and port:
+                auth = f"{username}:{password}@" if (username or password) else ""
+                proxy_value = f"socks5://{auth}{ip}:{port}"
+
+        payload = {"IpadOrmac": "", "Check": False, "Proxy": proxy_value}
+        data = await self.call_path("/user/SetProxy", body=payload)
+        return self._looks_like_send_ack(data)
+
+    async def set_step(self, count: int) -> bool:
+        """兼容旧客户端：修改步数。"""
+        data = await self.call_path("/other/UpdateStepNumber", body={"Number": int(count)})
+        return self._looks_like_send_ack(data)
+
+    async def check_database(self) -> bool:
+        """兼容旧客户端：检查数据库状态（869退化为登录态探测）。"""
+        try:
+            return bool(await self.is_logged_in(self.wxid or None))
+        except Exception:
+            return False
+
+    async def get_auto_heartbeat_status(self) -> bool:
+        """兼容旧客户端：自动心跳状态（869退化为登录态探测）。"""
+        try:
+            return bool(await self.is_logged_in(self.wxid or None))
+        except Exception:
+            return False
+
+    async def sync_message(self) -> Tuple[bool, Any]:
+        """兼容旧客户端：HTTP 同步消息。"""
+        try:
+            data = await self.call_path("/message/HttpSyncMsg", body={"Count": 0})
+            return True, data
+        except Exception as exc:
+            return False, str(exc)
+
+    async def get_hongbao_detail(self, xml: str, encrypt_key: str, encrypt_userinfo: str) -> Dict[str, Any]:
+        """兼容旧客户端：红包详情。"""
+        payload = {"NativeURL": str(xml or ""), "IsGroup": 1}
+        data = await self.call_path("/pay/GetRedEnvelopesDetail", body=payload)
+        if isinstance(data, dict):
+            data.setdefault("EncryptKey", encrypt_key)
+            data.setdefault("EncryptUserinfo", encrypt_userinfo)
+            return data
+        return {"Data": data, "EncryptKey": encrypt_key, "EncryptUserinfo": encrypt_userinfo}
+
+    @staticmethod
+    async def silk_byte_to_byte_wav_byte(silk_byte: bytes) -> bytes:
+        """兼容旧客户端：silk字节转wav字节。"""
+        return await pysilk.async_decode(silk_byte, to_wav=True)
 
     @staticmethod
     def _coerce_base64_payload(value: Any) -> str:

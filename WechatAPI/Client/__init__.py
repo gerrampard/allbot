@@ -1,3 +1,10 @@
+"""
+@input: 旧协议 mixins（login/message/friend/chatroom/tool/user/pyq）与本地 contacts.db
+@output: WechatAPIClient 统一旧协议客户端（供框架/插件调用）
+@position: Legacy Client 聚合入口（Facade），在 869 以外协议下作为主客户端实现
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
+
 from WechatAPI.errors import *
 from .base import WechatAPIClientBase, Proxy, Section
 from .chatroom import ChatroomMixin
@@ -110,6 +117,62 @@ class WechatAPIClient(LoginMixin, MessageMixin, FriendMixin, ChatroomMixin, User
         output += content
 
         return await self.send_text_message(wxid, output, at)
+
+    async def send_text(self, wxid: str, content: str, at="") -> tuple[int, int, int]:
+        """兼容 869/插件：send_text -> send_text_message。"""
+        return await self.send_text_message(wxid, content, at)
+
+    async def send_pat(self, chatroom_wxid: str, to_wxid: str, scene: int = 0):
+        """869 专属：群拍一拍（旧协议不支持）。"""
+        raise NotImplementedError("send_pat 仅在 869 客户端可用")
+
+    async def verify_code(self, code: str, *, data62: str = "", ticket: str = "", key: str = ""):
+        """869 专属：验证码验证（旧协议不支持）。"""
+        raise NotImplementedError("verify_code 仅在 869 客户端可用")
+
+    async def verify_code_slide(
+        self,
+        slide_ticket: str,
+        rand_str: str,
+        *,
+        data62: str = "",
+        ticket: str = "",
+        key: str = "",
+    ):
+        """869 专属：滑块验证（旧协议不支持）。"""
+        raise NotImplementedError("verify_code_slide 仅在 869 客户端可用")
+
+    async def ensure_auth_key(self):
+        """869 专属：确保授权码（旧协议不支持）。"""
+        raise NotImplementedError("ensure_auth_key 仅在 869 客户端可用")
+
+    async def try_wakeup_login(self, *, attempts: int = 6, interval_seconds: float = 2.0) -> bool:
+        """869 专属：免扫码唤醒登录（旧协议不支持）。"""
+        raise NotImplementedError("try_wakeup_login 仅在 869 客户端可用")
+
+    async def request(self, *args, **kwargs):
+        """869 专属：Swagger 路径请求（旧协议不支持）。"""
+        raise NotImplementedError("request 仅在 869 客户端可用")
+
+    async def call_path(self, *args, **kwargs):
+        """869 专属：Swagger 路径调用（旧协议不支持）。"""
+        raise NotImplementedError("call_path 仅在 869 客户端可用")
+
+    async def invoke(self, *args, **kwargs):
+        """869 专属：Swagger 动态调用（旧协议不支持）。"""
+        raise NotImplementedError("invoke 仅在 869 客户端可用")
+
+    async def add_friend(self, wxid: str, verify_msg: str = "你好"):
+        """869 专属：添加好友（旧协议请使用 SearchContact/VerifyUser 流程）。"""
+        raise NotImplementedError("add_friend 仅在 869 客户端可用")
+
+    async def delete_friend(self, wxid: str) -> bool:
+        """869 专属：删除好友（旧协议可用 DelContact，但未统一封装为 delete_friend）。"""
+        raise NotImplementedError("delete_friend 仅在 869 客户端可用")
+
+    async def get_friends(self):
+        """869 专属：获取好友列表（旧协议可用 GetContractList/GetTotalContractList）。"""
+        raise NotImplementedError("get_friends 仅在 869 客户端可用")
         
     def __del__(self):
         """清理资源"""

@@ -59,6 +59,19 @@ def _mask_key(value: str) -> str:
         return "*" * len(value)
     return f"{value[:3]}***{value[-2:]}"
 
+def _mask_ws_url(url: str) -> str:
+    runtime = str(url or "")
+    if not runtime:
+        return runtime
+    key_value = _extract_url_key(runtime)
+    if not key_value:
+        return runtime
+    parsed = urlparse(runtime)
+    query = parse_qs(parsed.query)
+    query["key"] = [_mask_key(key_value)]
+    encoded_query = urlencode({k: v[-1] if isinstance(v, list) else v for k, v in query.items()})
+    return urlunparse(parsed._replace(query=encoded_query))
+
 
 def _parse_invalid_status_payload(error: Exception) -> Dict[str, Any]:
     response = getattr(error, "response", None)
@@ -160,10 +173,10 @@ async def listen_ws_messages(xybot, ws_url: str | Callable[[], str], redis, mess
             if not runtime_ws_url.startswith("ws://") and not runtime_ws_url.startswith("wss://"):
                 runtime_ws_url = "ws://" + runtime_ws_url
 
-            logger.info("正在连接到 WebSocket 服务器: {}", runtime_ws_url)
+            logger.info("正在连接到 WebSocket 服务器: {}", _mask_ws_url(runtime_ws_url))
 
             async with websockets.connect(runtime_ws_url, ping_interval=30, ping_timeout=10) as websocket:
-                logger.success("已连接到 WebSocket 消息服务器: {}", runtime_ws_url)
+                logger.success("已连接到 WebSocket 消息服务器: {}", _mask_ws_url(runtime_ws_url))
                 reconnect_count = 0
 
                 while True:
@@ -289,22 +302,27 @@ class MessageListener:
         self.redis = None
         self.consumer_tasks = []
 
-    def _load_robot_stat_key(self) -> tuple[str, str]:
+    def _load_robot_stat_key(self) -> tuple[str, str, str]:
         stat_path = self.script_dir / "resource" / "robot_stat.json"
         if not stat_path.exists():
-            return "", ""
+            return "", "", ""
         try:
             with open(stat_path, "r", encoding="utf-8") as file:
                 data = json.load(file)
         except Exception:
-            return "", ""
+            return "", "", ""
         if not isinstance(data, dict):
-            return "", ""
-        return _first_non_empty(data.get("token_key")), _first_non_empty(data.get("auth_key"))
+            return "", "", ""
+        return (
+            _first_non_empty(data.get("token_key")),
+            _first_non_empty(data.get("poll_key")),
+            _first_non_empty(data.get("auth_key")),
+        )
 
     def _resolve_869_ws_key(self) -> str:
         bot = getattr(self.xybot, "bot", None)
         token_key = _first_non_empty(getattr(bot, "token_key", ""))
+        poll_key = _first_non_empty(getattr(bot, "poll_key", ""))
 
         auth_key = _first_non_empty(getattr(bot, "auth_key", ""))
         if not auth_key:
@@ -312,12 +330,13 @@ class MessageListener:
             if isinstance(auth_keys, list) and auth_keys:
                 auth_key = _first_non_empty(auth_keys[0])
 
-        if not token_key and not auth_key:
-            stat_token, stat_auth = self._load_robot_stat_key()
+        if not token_key and not poll_key and not auth_key:
+            stat_token, stat_poll, stat_auth = self._load_robot_stat_key()
             token_key = token_key or stat_token
+            poll_key = poll_key or stat_poll
             auth_key = auth_key or stat_auth
 
-        return _first_non_empty(token_key, auth_key, self.config.wechat_api.admin_key)
+        return _first_non_empty(token_key, poll_key, auth_key)
 
     async def start_listening(self, message_db):
         api_config = self.config.wechat_api
@@ -347,7 +366,7 @@ class MessageListener:
                             return
 
                 ws_url = self._get_websocket_url
-                logger.info("WebSocket 消息推送地址: {}", ws_url())
+                logger.info("WebSocket 消息推送地址: {}", _mask_ws_url(ws_url()))
                 await listen_ws_messages(self.xybot, ws_url, self.redis, message_db)
             else:
                 logger.info("WebSocket 消息通道已禁用（enable-websocket = false），消息消费者将继续从 Redis 队列读取")

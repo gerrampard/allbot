@@ -9,4 +9,4 @@
 | File | Role | Function |
 |------|------|----------|
 | __init__.py | Entry | 导出 `Client869` |
-| client.py | Core | 869 动态接口调用、AuthKey 生成、登录（含 data62/ticket 验证码参数）；发送分流（wechat 直发/多平台入队）；媒体下载兼容（图片/附件通过 `/message/SendCdnDownload`）；补齐联系人接口兼容映射，并提供掉线后免扫码唤醒登录能力（`try_wakeup_login`） |
+| client.py | Core | 869 动态接口调用、AuthKey 生成、登录（含 data62/ticket 验证码参数）；发送分流（wechat 直发/多平台入队，发图接口在 `SendImageMessage` 失败/非结构化响应/缺少发送确认时自动回退 `SendImageNewMessage`，并记录发送类接口非 JSON 响应日志）；媒体下载兼容（图片/附件通过 `/message/SendCdnDownload`）；补齐联系人接口兼容映射，并提供掉线后免扫码唤醒登录能力（`try_wakeup_login`） |

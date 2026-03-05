@@ -420,6 +420,14 @@ class Client869:
                     or payload.get("message")
                     or "869 接口请求失败"
                 )
+        elif self._is_send_related_path(request_path):
+            text_preview = str(payload).strip().replace("\n", " ")
+            logger.warning(
+                "Client869 响应: {} {} 非JSON payload={}",
+                request_method,
+                request_path,
+                text_preview[:200],
+            )
         return payload
 
     @staticmethod
@@ -1092,6 +1100,61 @@ class Client869:
         raise ValueError("不支持的二进制数据类型")
 
     @staticmethod
+    def _coerce_optional_bool(value: Any) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "ok", "success"}:
+                return True
+            if lowered in {"0", "false", "no", "fail", "failed"}:
+                return False
+        return None
+
+    @classmethod
+    def _extract_send_success_flag(cls, data: Any) -> Optional[bool]:
+        candidates: list[Any] = []
+
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            first = data[0]
+            candidates.append(first.get("isSendSuccess"))
+            resp = first.get("resp")
+            if isinstance(resp, dict):
+                chat_list = resp.get("chat_send_ret_list")
+                if isinstance(chat_list, list) and chat_list and isinstance(chat_list[0], dict):
+                    candidates.append(chat_list[0].get("isSendSuccess"))
+            list_data = first.get("List")
+            if isinstance(list_data, list) and list_data and isinstance(list_data[0], dict):
+                candidates.append(list_data[0].get("isSendSuccess"))
+
+        if isinstance(data, dict):
+            candidates.append(data.get("isSendSuccess"))
+            list_data = data.get("List")
+            if isinstance(list_data, list) and list_data and isinstance(list_data[0], dict):
+                candidates.append(list_data[0].get("isSendSuccess"))
+            resp = data.get("resp")
+            if isinstance(resp, dict):
+                chat_list = resp.get("chat_send_ret_list")
+                if isinstance(chat_list, list) and chat_list and isinstance(chat_list[0], dict):
+                    candidates.append(chat_list[0].get("isSendSuccess"))
+
+        for candidate in candidates:
+            converted = cls._coerce_optional_bool(candidate)
+            if converted is not None:
+                return converted
+        return None
+
+    @classmethod
+    def _looks_like_send_ack(cls, data: Any) -> bool:
+        success = cls._extract_send_success_flag(data)
+        if success is True:
+            return True
+        client_msg_id, _create_time, new_msg_id = cls._extract_send_tuple(data)
+        return bool(client_msg_id or new_msg_id)
+
+    @staticmethod
     def _extract_send_tuple(data: Any) -> Tuple[int, int, int]:
         now = int(time.time())
 
@@ -1186,11 +1249,40 @@ class Client869:
         }
 
         try:
-            data = await self.call_path("/message/SendImageMessage", body=payload)
-        except Exception:
-            data = await self.call_path("/message/SendImageNewMessage", body=payload)
+            primary_data = await self.call_path("/message/SendImageMessage", body=payload)
+        except Exception as exc:
+            logger.warning("Client869 SendImageMessage 调用异常，回退 SendImageNewMessage: {}", exc)
+            fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
+            return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
 
-        return data if isinstance(data, dict) else {"Data": data}
+        if not isinstance(primary_data, (dict, list)):
+            logger.warning(
+                "Client869 SendImageMessage 返回非结构化响应(type={})，回退 SendImageNewMessage",
+                type(primary_data).__name__,
+            )
+            fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
+            return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
+
+        primary_success = self._extract_send_success_flag(primary_data)
+        if primary_success is False:
+            logger.warning("Client869 SendImageMessage 返回 isSendSuccess=False，回退 SendImageNewMessage")
+            try:
+                fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
+                fallback_success = self._extract_send_success_flag(fallback_data)
+                if fallback_success is False:
+                    logger.warning("Client869 SendImageNewMessage 仍返回 isSendSuccess=False")
+                return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
+            except Exception as exc:
+                logger.warning("Client869 SendImageNewMessage 调用异常，保留原始 SendImageMessage 响应: {}", exc)
+        elif primary_success is None and not self._looks_like_send_ack(primary_data):
+            logger.warning("Client869 SendImageMessage 返回缺少发送确认字段，回退 SendImageNewMessage")
+            try:
+                fallback_data = await self.call_path("/message/SendImageNewMessage", body=payload)
+                return fallback_data if isinstance(fallback_data, dict) else {"Data": fallback_data}
+            except Exception as exc:
+                logger.warning("Client869 SendImageNewMessage 调用异常，保留原始 SendImageMessage 响应: {}", exc)
+
+        return primary_data if isinstance(primary_data, dict) else {"Data": primary_data}
 
     async def send_voice_message(
         self,

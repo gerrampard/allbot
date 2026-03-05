@@ -6,7 +6,7 @@ author = "BEelzebub"
 
 [Config]
 # 监控间隔（秒）
-check_interval = 300
+check_interval = 3
 
 # 是否开启调试模式
 debug = true

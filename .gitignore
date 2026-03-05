@@ -65,3 +65,5 @@ plugins/*/
 !plugins/DifyConversationManager
 !plugins/Dify
 !plugins/DependencyManager
+!plugins/Protocol869Demo
+!plugins/VideoSender

@@ -11,7 +11,7 @@
 | README.md | Doc | 插件总览与使用说明 |
 | Claw/ | Plugin | OpenClaw 网关通信（WS 持久连接、触发词自动转发、RPC、runId 实时事件回推、媒体公网链接输出） |
 | GroupMonitor/ | Plugin | 退群提醒（群成员快照对比，已适配复用 bot 客户端接口） |
-| GroupWelcome/ | Plugin | 入群欢迎语（群成员信息/事件处理） |
+| GroupWelcome/ | Plugin | 入群欢迎语（进群事件处理，使用框架方法发送卡片与取群成员头像） |
 | Reminder/ | Plugin | 定时提醒 |
 | Dify/ | Plugin | Dify 接入相关插件 |
 | Protocol869Demo/ | Plugin | 869 客户端能力示例（拍一拍/撤回/二维码/标签/群信息/动态调用） |

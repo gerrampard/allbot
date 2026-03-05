@@ -1,3 +1,10 @@
+"""
+@input: 系统进群 sysmsg（XML）、WechatAPIClient（send_app_message/get_chatroom_member_list/upload_file）
+@output: 进群欢迎卡片消息（可选发送项目说明 PDF）
+@position: 插件层进群欢迎逻辑，使用框架方法避免硬编码协议接口
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
+
 import tomllib
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -13,7 +20,7 @@ from utils.plugin_base import PluginBase
 class GroupWelcome(PluginBase):
     description = "进群欢迎"
     author = "allbot"
-    version = "1.3.0"  # 更新版本号，简化卡片发送实现
+    version = "1.3.1"  # 改用框架方法，移除硬编码协议接口
 
     def __init__(self):
         super().__init__()
@@ -38,15 +45,7 @@ class GroupWelcome(PluginBase):
             else:
                 logger.warning(f"项目说明PDF文件不存在: {self.pdf_path}")
                 
-        # 读取协议版本
-        try:
-            with open("main_config.toml", "rb") as f:
-                main_config = tomllib.load(f)
-                self.protocol_version = main_config.get("Protocol", {}).get("version", "855")
-                logger.info(f"当前协议版本: {self.protocol_version}")
-        except Exception as e:
-            logger.warning(f"读取协议版本失败，将使用默认版本849: {e}")
-            self.protocol_version = "849"
+        # 协议差异由框架 client 统一封装，插件不读取协议版本也不直接调用底层协议 API
 
     @on_system_message
     async def group_welcome(self, bot: WechatAPIClient, message: dict):
@@ -105,49 +104,43 @@ class GroupWelcome(PluginBase):
                     # 获取用户头像
                     avatar_url = ""
                     try:
-                        # 使用群成员API获取头像
-                        import aiohttp
-                        import json
+                        members = await bot.get_chatroom_member_list(message["FromWxid"])
 
-                        # 构造请求参数
-                        json_param = {"QID": message["FromWxid"], "Wxid": bot.wxid}
-                        
-                        # 确定 API 基础路径
-                        api_base = f"http://{bot.ip}:{bot.port}"
-                        
-                        # 根据协议版本选择正确的 API 前缀
-                        api_prefix = "/api" if self.protocol_version != "849" else "/VXAPI"
-                        
-                        async with aiohttp.ClientSession() as session:
-                            response = await session.post(
-                                f"{api_base}{api_prefix}/Group/GetChatRoomMemberDetail",
-                                json=json_param,
-                                headers={"Content-Type": "application/json"}
-                            )
+                        def _extract_member_wxid(member_data: dict) -> str:
+                            if not isinstance(member_data, dict):
+                                return ""
+                            for key in ("Wxid", "wxid", "UserName", "userName", "Username", "username", "user_name"):
+                                value = member_data.get(key)
+                                if isinstance(value, dict):
+                                    value = value.get("string") or value.get("str") or value.get("value") or ""
+                                if value:
+                                    return str(value).strip()
+                            return ""
 
-                            # 检查响应状态
-                            if response.status == 200:
-                                json_resp = await response.json()
-                                
-                                if json_resp.get("Success"):
-                                    # 获取群成员列表
-                                    group_data = json_resp.get("Data", {})
-                                    
-                                    # 正确提取ChatRoomMember列表
-                                    if "NewChatroomData" in group_data and "ChatRoomMember" in group_data["NewChatroomData"]:
-                                        group_members = group_data["NewChatroomData"]["ChatRoomMember"]
-                                        
-                                        if isinstance(group_members, list) and group_members:
-                                            # 在群成员列表中查找指定成员
-                                            for member_data in group_members:
-                                                # 尝试多种可能的字段名
-                                                member_wxid = member_data.get("UserName") or member_data.get("Wxid") or member_data.get("wxid") or ""
-                                                
-                                                if member_wxid == wxid:
-                                                    # 获取头像地址
-                                                    avatar_url = member_data.get("BigHeadImgUrl") or member_data.get("SmallHeadImgUrl") or ""
-                                                    logger.info(f"成功获取到群成员 {nickname}({wxid}) 的头像地址")
-                                                    break
+                        def _extract_avatar_url(member_data: dict) -> str:
+                            if not isinstance(member_data, dict):
+                                return ""
+                            for key in (
+                                "BigHeadImgUrl",
+                                "bigHeadImgUrl",
+                                "SmallHeadImgUrl",
+                                "smallHeadImgUrl",
+                                "avatar",
+                                "HeadImgUrl",
+                                "headImgUrl",
+                            ):
+                                value = member_data.get(key)
+                                if value:
+                                    return str(value).strip()
+                            return ""
+
+                        for member_data in members or []:
+                            if _extract_member_wxid(member_data) != wxid:
+                                continue
+                            avatar_url = _extract_avatar_url(member_data)
+                            if avatar_url:
+                                logger.info(f"成功获取到群成员 {nickname}({wxid}) 的头像地址")
+                            break
                     except Exception as e:
                         logger.warning(f"获取用户头像失败: {e}")
 
@@ -162,8 +155,8 @@ class GroupWelcome(PluginBase):
                     # 简化的XML结构
                     simple_xml = f"""<appmsg><title>{title}</title><des>{description}</des><type>5</type><url>{self.url}</url><thumburl>{avatar_url}</thumburl></appmsg>"""
                     
-                    # 直接调用API发送
-                    await self._send_app_message_direct(bot, message["FromWxid"], simple_xml, 5)
+                    # 使用框架方法发送（避免硬编码协议接口）
+                    await bot.send_app_message(message["FromWxid"], simple_xml, 5)
                     
                     # 根据配置决定是否发送项目说明PDF文件
                     if self.send_file:
@@ -181,54 +174,12 @@ class GroupWelcome(PluginBase):
                     # 简化的XML结构(无头像)
                     simple_xml = f"""<appmsg><title>{title}</title><des>{description}</des><type>5</type><url>{self.url}</url><thumburl></thumburl></appmsg>"""
                     
-                    # 直接调用API发送
-                    await self._send_app_message_direct(bot, message["FromWxid"], simple_xml, 5)
+                    # 使用框架方法发送（避免硬编码协议接口）
+                    await bot.send_app_message(message["FromWxid"], simple_xml, 5)
                     
                     # 根据配置决定是否发送项目说明PDF文件
                     if self.send_file:
                         await self.send_pdf_file(bot, message["FromWxid"])
-
-    async def _send_app_message_direct(self, bot: WechatAPIClient, to_wxid: str, xml: str, msg_type: int):
-        """直接调用SendApp API发送消息"""
-        try:
-            # 确定API基础路径
-            api_base = f"http://{bot.ip}:{bot.port}"
-            
-            # 根据协议版本选择正确的API前缀
-            api_prefix = "/api" if self.protocol_version != "849" else "/VXAPI"
-            
-            # 构造请求参数
-            import aiohttp
-            import json
-            
-            data = {
-                "ToWxid": to_wxid,
-                "Type": msg_type,
-                "Wxid": bot.wxid,
-                "Xml": xml
-            }
-            
-            logger.info(f"调用SendApp API发送卡片消息: {to_wxid}")
-            
-            async with aiohttp.ClientSession() as session:
-                response = await session.post(
-                    f"{api_base}{api_prefix}/Msg/SendApp",
-                    json=data,
-                    headers={"Content-Type": "application/json"}
-                )
-                
-                if response.status == 200:
-                    resp_data = await response.json()
-                    logger.info(f"发送卡片消息成功: {resp_data}")
-                    return resp_data
-                else:
-                    logger.error(f"发送卡片消息失败: HTTP状态码 {response.status}")
-                    response_text = await response.text()
-                    logger.error(f"错误详情: {response_text}")
-                    return None
-        except Exception as e:
-            logger.error(f"调用SendApp API发送卡片消息失败: {e}")
-            return None
 
     @staticmethod
     def _parse_member_info(root: ET.Element, link_name: str = "names") -> list[dict]:
@@ -298,8 +249,8 @@ class GroupWelcome(PluginBase):
 
             # 发送文件消息
             logger.info(f"开始发送项目说明PDF文件: {file_name}")
-            result = await self._send_app_message_direct(bot, to_wxid, xml, 6)
-            logger.info(f"项目说明PDF文件发送结果: {result}")
+            await bot.send_app_message(to_wxid, xml, 6)
+            logger.info("项目说明PDF文件发送完成")
 
         except Exception as e:
             logger.error(f"发送项目说明PDF文件失败: {e}")

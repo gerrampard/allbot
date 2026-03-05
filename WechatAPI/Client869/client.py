@@ -1836,8 +1836,15 @@ class Client869:
             f"<fileext>{file_extension}</fileext>"
             "</appattach><md5></md5></appmsg>"
         )
-        await self.send_app_message(wxid, xml, 6)
-        return {"mediaId": media_id, "totalLen": total_len, "fileName": resolved_name}
+        client_msg_id, create_time, new_msg_id = await self.send_app_message(wxid, xml, 6)
+        return {
+            "mediaId": media_id,
+            "totalLen": total_len,
+            "fileName": resolved_name,
+            "clientMsgId": client_msg_id,
+            "createTime": create_time,
+            "newMsgId": new_msg_id,
+        }
 
     async def send_link_message(
         self,
@@ -1993,30 +2000,51 @@ class Client869:
         create_time: int,
         new_msg_id: int,
     ) -> bool:
-        payload = {
-            "ToUserName": wxid,
-            "ClientMsgId": client_msg_id,
-            "CreateTime": create_time,
-            "NewMsgId": str(new_msg_id),
-            "ClientImgIdStr": str(client_msg_id),
-            "IsImage": False,
-        }
-        try:
-            raw_payload = await self.request("/message/RevokeMsg", body=payload)
-            if isinstance(raw_payload, dict):
-                data = raw_payload.get("Data")
-                if self._looks_like_send_ack(data):
-                    return True
-                success = self._coerce_optional_bool(raw_payload.get("Success"))
-                if success is True:
-                    return True
-            if raw_payload is not None:
-                return True
-        except Exception as exc:
-            logger.warning("Client869 RevokeMsg 调用异常，尝试回退 RevokeMsgNew: {}", exc)
+        client_msg_id_raw = str(client_msg_id or "").strip()
+        client_msg_id_int = _safe_int(client_msg_id_raw, 0)
+        create_time_int = _safe_int(create_time, 0)
+        new_msg_id_str = str(new_msg_id or "").strip()
 
-        try:
-            raw_payload = await self.request("/message/RevokeMsgNew", body=payload)
+        def _build_payload(*, is_image: bool, include_img_str: bool, include_client_id: bool, include_create_time: bool) -> Dict[str, Any]:
+            payload: Dict[str, Any] = {
+                "ToUserName": wxid,
+                "NewMsgId": new_msg_id_str,
+                "IsImage": bool(is_image),
+            }
+            if include_client_id and client_msg_id_int > 0:
+                payload["ClientMsgId"] = client_msg_id_int
+            if include_create_time and create_time_int > 0:
+                payload["CreateTime"] = create_time_int
+            if include_img_str and client_msg_id_raw:
+                payload["ClientImgIdStr"] = client_msg_id_raw
+            return payload
+
+        payload_candidates = [
+            _build_payload(is_image=False, include_img_str=True, include_client_id=True, include_create_time=True),
+            _build_payload(is_image=True, include_img_str=True, include_client_id=True, include_create_time=True),
+            _build_payload(is_image=False, include_img_str=False, include_client_id=True, include_create_time=True),
+            _build_payload(is_image=True, include_img_str=False, include_client_id=True, include_create_time=True),
+            _build_payload(is_image=False, include_img_str=True, include_client_id=True, include_create_time=False),
+            _build_payload(is_image=True, include_img_str=True, include_client_id=True, include_create_time=False),
+        ]
+
+        # 去重，避免重复请求同一 payload
+        dedup_payloads: list[Dict[str, Any]] = []
+        seen = set()
+        for item in payload_candidates:
+            key = tuple(sorted(item.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup_payloads.append(item)
+
+        async def _try_revoke(path: str, payload: Dict[str, Any]) -> Optional[bool]:
+            try:
+                raw_payload = await self.request(path, body=payload)
+            except Exception as exc:
+                logger.warning("Client869 {} 调用异常 payload={}: {}", path, payload, exc)
+                return None
+
             if isinstance(raw_payload, dict):
                 data = raw_payload.get("Data")
                 if self._looks_like_send_ack(data):
@@ -2024,10 +2052,26 @@ class Client869:
                 success = self._coerce_optional_bool(raw_payload.get("Success"))
                 if success is True:
                     return True
+                if success is False:
+                    return False
             return raw_payload is not None
-        except Exception as exc:
-            logger.error("Client869 RevokeMsgNew 调用异常: {}", exc)
-            return False
+
+        for payload in dedup_payloads:
+            ok = await _try_revoke("/message/RevokeMsg", payload)
+            if ok is True:
+                return True
+            ok_new = await _try_revoke("/message/RevokeMsgNew", payload)
+            if ok_new is True:
+                return True
+
+        logger.error(
+            "Client869 revoke_message 失败: wxid={}, client_msg_id={}, create_time={}, new_msg_id={}",
+            wxid,
+            client_msg_id_raw,
+            create_time_int,
+            new_msg_id_str,
+        )
+        return False
 
     async def send_pat(self, chatroom_wxid: str, to_wxid: str, scene: int = 0) -> Dict[str, Any]:
         """发送群拍一拍（仅群聊）。"""

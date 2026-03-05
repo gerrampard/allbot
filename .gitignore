@@ -67,3 +67,4 @@ plugins/*/
 !plugins/DependencyManager
 !plugins/Protocol869Demo
 !plugins/VideoSender
+!plugins/RevokeBotMessage

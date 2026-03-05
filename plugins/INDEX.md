@@ -15,3 +15,4 @@
 | Reminder/ | Plugin | 定时提醒 |
 | Dify/ | Plugin | Dify 接入相关插件 |
 | Protocol869Demo/ | Plugin | 869 客户端能力示例（拍一拍/撤回/二维码/标签/群信息/动态调用） |
+| RevokeBotMessage/ | Plugin | 撤回机器人消息（引用机器人消息 + 发送“撤回”撤回引用消息；记录发送回执） |

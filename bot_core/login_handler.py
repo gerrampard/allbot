@@ -26,6 +26,9 @@ class WechatLoginHandler:
         self.script_dir = script_dir
         self.update_status = update_status_callback
 
+    def _resolve_869_qrcode_proxy(self) -> str:
+        return str(getattr(self.bot, "login_qrcode_proxy", "") or "").strip()
+
     async def handle_login(self, enable_wechat_login: bool) -> bool:
         if not enable_wechat_login:
             logger.warning("已禁用原生微信登录（enable-wechat-login=false），系统将仅依赖适配器处理消息")
@@ -103,6 +106,9 @@ class WechatLoginHandler:
         self.bot.device_type = robot_stat.get("device_type", "") or getattr(self.bot, "device_type", "")
         self.bot.device_id = device_id
 
+        if not await self._ensure_869_auth_material(robot_stat):
+            return False
+
         wxid = robot_stat.get("wxid", "")
         if wxid:
             self.bot.wxid = wxid
@@ -118,6 +124,7 @@ class WechatLoginHandler:
                 uuid, url = await self.bot.get_qr_code(
                     device_name=login_mode,
                     device_id=device_id,
+                    proxy=self._resolve_869_qrcode_proxy() or None,
                     print_qr=True,
                 )
 
@@ -231,6 +238,89 @@ class WechatLoginHandler:
         )
         await self._start_auto_heartbeat()
         return True
+
+    async def _ensure_869_auth_material(self, robot_stat: Dict[str, Any]) -> bool:
+        """确保 869 登录流程具备可用的 key。
+
+        策略（按优先级）：
+        1) 使用缓存状态文件的 key（token/poll/auth）进行 is_logged_in 检测；
+        2) 若缓存无效且配置存在 admin_key，则自动生成/获取永久卡密（auth_key）；
+        3) 若两者都不存在，则停止登录并写入 error 状态（needs_auth_key=true）。
+        """
+
+        def _first_non_empty(*values: Any) -> str:
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
+        token_key = _first_non_empty(getattr(self.bot, "token_key", ""), robot_stat.get("token_key", ""))
+        poll_key = _first_non_empty(getattr(self.bot, "poll_key", ""), robot_stat.get("poll_key", ""))
+        auth_key = _first_non_empty(getattr(self.bot, "auth_key", ""), robot_stat.get("auth_key", ""))
+
+        if token_key:
+            self.bot.token_key = token_key
+        if poll_key:
+            self.bot.poll_key = poll_key
+        if auth_key:
+            self.bot.auth_key = auth_key
+
+        auth_keys = robot_stat.get("auth_keys") or []
+        if isinstance(auth_keys, str):
+            auth_keys = [auth_keys]
+        if not isinstance(auth_keys, list):
+            auth_keys = []
+        auth_keys = [str(x).strip() for x in auth_keys if str(x).strip()]
+        if self.bot.auth_key and self.bot.auth_key not in auth_keys:
+            auth_keys.insert(0, self.bot.auth_key)
+        self.bot.auth_keys = auth_keys
+
+        has_cached_key = bool(self.bot.token_key or self.bot.poll_key or self.bot.auth_key)
+
+        if has_cached_key:
+            try:
+                if await self.bot.is_logged_in(robot_stat.get("wxid", "") or None):
+                    return True
+            except Exception:
+                pass
+
+        admin_key = str(getattr(self.bot, "admin_key", "") or "").strip()
+        if admin_key:
+            try:
+                ensured = await self.bot.ensure_auth_key()
+                ensured = str(ensured or "").strip()
+                if ensured:
+                    self.bot.auth_key = ensured
+                    if ensured not in self.bot.auth_keys:
+                        self.bot.auth_keys.insert(0, ensured)
+                    # 持久化：确保后续启动优先使用缓存 key
+                    self._save_robot_stat(
+                        self.bot.wxid or str(robot_stat.get("wxid", "") or ""),
+                        str(robot_stat.get("device_name", "") or ""),
+                        str(getattr(self.bot, "device_id", "") or ""),
+                        {
+                            "auth_key": self.bot.auth_key,
+                            "auth_keys": self.bot.auth_keys,
+                            "token_key": getattr(self.bot, "token_key", ""),
+                            "poll_key": getattr(self.bot, "poll_key", ""),
+                            "device_type": getattr(self.bot, "device_type", ""),
+                        },
+                    )
+                    return True
+            except Exception as error:
+                logger.warning("869 ensure_auth_key 失败: {}", error)
+
+        self.update_status(
+            "error",
+            "缺少登录卡密 key：请在二维码页面填写卡密后重试",
+            {
+                "protocol_version": "869",
+                "needs_auth_key": True,
+                "error_message": "缺少登录卡密 key：请在二维码页面填写卡密后重试",
+            },
+        )
+        return False
 
     @staticmethod
     def _flatten_text(payload: Dict[str, Any]) -> str:

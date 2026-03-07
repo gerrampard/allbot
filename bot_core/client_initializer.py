@@ -1,6 +1,6 @@
 """
-@input: AppConfig 配置与 ReplyRouter/ReplyDispatcher 组件
-@output: 根据协议版本初始化微信客户端并接入回复路由
+@input: AppConfig 配置与 ReplyRouter/ReplyDispatcher 组件（含 869 admin-key/ws-url/login-qrcode-proxy）
+@output: 根据协议版本初始化微信客户端并接入回复路由（869 会注入拉码代理配置到 Client869）
 @position: bot_core 启动流程中的客户端构建层
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
@@ -52,6 +52,7 @@ class ClientInitializer:
                 admin_key=api_config.admin_key,
                 ws_url=api_config.ws_url,
             )
+            bot.login_qrcode_proxy = api_config.login_qrcode_proxy or ""
             logger.success("✅ 成功加载 Client869 客户端")
         else:
             bot = WechatAPIClient(api_config.host, api_config.port, protocol_version=protocol_version)

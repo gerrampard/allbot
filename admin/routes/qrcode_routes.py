@@ -1,7 +1,7 @@
 """
-@input: bot_status.json 登录状态文件；运行时 bot 实例（用于 869 验证码校验/切换 mac 拉码）
-@output: 二维码页面与登录辅助 API（获取二维码、提交验证码、手动切 mac 二维码）
-@position: 管理后台未登录入口（/qrcode）与登录流程辅助路由
+@input: bot_status.json 登录状态文件；运行时 bot 实例（用于 869 验证码校验/切换 mac 拉码/卡密重入）
+@output: 二维码页面与登录辅助 API（获取二维码、提交验证码、切换 mac 拉码、提交卡密与代理重入流程）
+@position: 管理后台未登录入口（/qrcode）与 869 登录流程辅助路由
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
 import json
@@ -109,6 +109,17 @@ def register_qrcode_routes(app, templates):
             qrcode_url = f"https://api.pwmqr.com/qrcode/create/?url=http://weixin.qq.com/x/{uuid}"
 
         if not qrcode_url:
+            raw_status = str(data.get("status", "") or "").strip().lower()
+            if raw_status in {"waiting_login", "scanning", "initialized", "initializing"}:
+                return {
+                    "success": True,
+                    "data": {
+                        "pending": True,
+                        "status": raw_status or "waiting_login",
+                        "message": "二维码生成中，请稍候...",
+                        "login_mode": data.get("login_mode") or data.get("device_type") or "",
+                    },
+                }
             return {"success": False, "error": "未找到二维码信息，请稍后重试"}
 
         expires_in_raw = data.get("expires_in", 240)
@@ -127,6 +138,7 @@ def register_qrcode_routes(app, templates):
                 "login_mode": data.get("login_mode") or data.get("device_type") or "",
                 "data62": data.get("data62") or "",
                 "ticket": data.get("ticket") or "",
+                "needs_auth_key": bool(data.get("needs_auth_key")),
             },
         }
 
@@ -230,6 +242,96 @@ def register_qrcode_routes(app, templates):
             }
         except Exception as e:
             logger.error(f"切换 mac 拉码失败: {e}")
+            return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+    @app.post("/api/login/restart_869_flow", response_class=JSONResponse)
+    async def api_login_restart_869_flow(request: Request):
+        """869 专属：提交卡密 key/拉码代理，并重新拉取二维码进入流程。"""
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        auth_key = str((payload or {}).get("auth_key", "") or "").strip()
+        qrcode_proxy = str((payload or {}).get("qrcode_proxy", "") or "").strip()
+
+        try:
+            from admin.core.app_setup import get_bot_instance
+
+            wrapper = get_bot_instance()
+            wxapi = getattr(wrapper, "bot", wrapper)
+            if wxapi is None:
+                return JSONResponse(status_code=503, content={"success": False, "error": "机器人实例未初始化"})
+
+            protocol_version = str(getattr(wxapi, "protocol_version", "") or "").lower()
+            if protocol_version != "869":
+                return JSONResponse(status_code=400, content={"success": False, "error": "仅 869 客户端支持该接口"})
+
+            if auth_key:
+                setattr(wxapi, "auth_key", auth_key)
+                auth_keys = getattr(wxapi, "auth_keys", None)
+                if not isinstance(auth_keys, list):
+                    auth_keys = []
+                auth_keys = [str(x).strip() for x in auth_keys if str(x).strip()]
+                if auth_key not in auth_keys:
+                    auth_keys.insert(0, auth_key)
+                setattr(wxapi, "auth_keys", auth_keys)
+
+            if qrcode_proxy:
+                setattr(wxapi, "login_qrcode_proxy", qrcode_proxy)
+
+            device_id = str(getattr(wxapi, "device_id", "") or "").strip()
+            if not device_id and hasattr(wxapi, "create_device_id"):
+                device_id = str(wxapi.create_device_id()).strip()
+
+            device_type = str(getattr(wxapi, "device_type", "") or "").strip().lower()
+            login_mode = "mac" if device_type == "mac" else "ipad"
+
+            uuid, qrcode_url = await wxapi.get_qr_code(
+                device_name=login_mode,
+                device_id=device_id,
+                proxy=qrcode_proxy or None,
+                print_qr=False,
+            )
+
+            now = time.time()
+            status_data, _ = _load_status()
+            if not isinstance(status_data, dict):
+                status_data = {}
+            status_data.update(
+                {
+                    "status": "waiting_login",
+                    "details": "等待微信扫码登录",
+                    "qrcode_url": qrcode_url,
+                    "uuid": uuid,
+                    "expires_in": 240,
+                    "timestamp": now,
+                    "login_mode": login_mode,
+                    "device_type": login_mode,
+                    "device_id": getattr(wxapi, "device_id", "") or device_id,
+                    "token_key": getattr(wxapi, "token_key", "") or "",
+                    "poll_key": getattr(wxapi, "poll_key", "") or "",
+                    "data62": getattr(wxapi, "data62", "") or "",
+                    "ticket": getattr(wxapi, "ticket", "") or "",
+                    "needs_auth_key": False,
+                }
+            )
+            _save_status(status_data)
+
+            return {
+                "success": True,
+                "data": {
+                    "qrcode_url": qrcode_url,
+                    "uuid": uuid,
+                    "expires_in": 240,
+                    "timestamp": now,
+                    "login_mode": login_mode,
+                    "data62": status_data.get("data62", ""),
+                    "ticket": status_data.get("ticket", ""),
+                },
+            }
+        except Exception as e:
+            logger.error(f"重启 869 登录流程失败: {e}")
             return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
     @app.get("/api/qrcode")

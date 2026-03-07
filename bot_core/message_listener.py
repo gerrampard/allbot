@@ -136,9 +136,11 @@ async def listen_ws_messages(xybot, ws_url: str | Callable[[], str], redis, mess
 
             try:
                 from bot_core.status_manager import update_bot_status
+
+                # 唤醒登录期间不要落 offline，否则前端会显示“机器人未运行”。
                 update_bot_status(
-                    "offline",
-                    f"869 掉线，尝试免扫码唤醒登录：{reason}",
+                    "waiting_login",
+                    f"869 掉线，正在唤醒登录：{reason}",
                     {"protocol_version": "869", "wxid": getattr(bot, "wxid", "") or ""},
                 )
             except Exception:
@@ -356,14 +358,38 @@ class MessageListener:
                         try:
                             login_ok = await login_task
                         except Exception as error:
-                            logger.error("登录任务异常，停止启动 869 主 WS: {}", error)
-                            await asyncio.Event().wait()
-                            return
+                            logger.error("登录任务异常，转为等待后续手动登录成功再启动 869 主 WS: {}", error)
+                            login_ok = False
 
                         if not login_ok:
-                            logger.warning("登录未成功，停止启动 869 主 WS（请重新扫码登录）")
-                            await asyncio.Event().wait()
-                            return
+                            logger.warning("登录未成功，等待后续扫码/卡密登录成功后再启动 869 主 WS")
+                            bot = getattr(self.xybot, "bot", None)
+                            while True:
+                                try:
+                                    if bot is not None and await bot.is_logged_in(getattr(bot, "wxid", None) or None):
+                                        try:
+                                            from bot_core.status_manager import update_bot_status
+
+                                            if hasattr(bot, "get_profile"):
+                                                await bot.get_profile()
+
+                                            update_bot_status(
+                                                "online",
+                                                f"已登录：{getattr(bot, 'nickname', '') or ''}",
+                                                {
+                                                    "protocol_version": "869",
+                                                    "nickname": getattr(bot, "nickname", "") or "",
+                                                    "wxid": getattr(bot, "wxid", "") or "",
+                                                    "alias": getattr(bot, "alias", "") or "",
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
+                                        logger.success("检测到 869 后续登录成功，继续启动主 WS")
+                                        break
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(3)
 
                 ws_url = self._get_websocket_url
                 logger.info("WebSocket 消息推送地址: {}", _mask_ws_url(ws_url()))

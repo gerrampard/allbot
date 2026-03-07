@@ -9,10 +9,10 @@
 | File | Role | Function |
 |------|------|----------|
 | __init__.py | Entry | 导出 `bot_core` 与消息监听函数 |
-| orchestrator.py | Orchestrator | 串联启动流程（登录异步化，不阻塞适配器） |
-| client_initializer.py | Client Builder | 按协议创建客户端（含 `Client869`）并接入回复路由 |
-| login_handler.py | Login | 登录/会话恢复（含 869 二维码轮询、必要时自动切换 mac 滑块流程；状态回调补齐 device_name/device_id） |
+| orchestrator.py | Orchestrator | 串联启动流程（登录异步化，不阻塞适配器；避免 `ready` 覆盖 869 登录态） |
+| client_initializer.py | Client Builder | 按协议创建客户端（含 `Client869`）并接入回复路由，同时注入 869 拉码代理配置 |
+| login_handler.py | Login | 登录/会话恢复（含 869 缓存 key 优先恢复、`admin-key -> auth_key` 回退、缺失卡密时停止并落 error；二维码轮询必要时自动切换 mac） |
 | service_initializer.py | Service Init | 数据库、插件、通知等初始化 |
-| message_listener.py | Message IO | WS 收消息标准化、入队与消费调度（869 在扫码登录成功后再连主 WS；掉线时触发免扫码唤醒登录；WS key 严格优先 `token_key/poll_key/auth_key`，不再回退 `admin_key`，并对日志中的 key 做脱敏） |
+| message_listener.py | Message IO | WS 收消息标准化、入队与消费调度（869 在扫码登录成功后再连主 WS；掉线时触发免扫码唤醒登录，唤醒中保持 waiting_login 避免前端误报未运行；WS key 严格优先 `token_key/poll_key/auth_key`，不再回退 `admin_key`，并对日志中的 key 做脱敏） |
 | ws_message_normalizer.py | Utility | WS 消息数组提取与 AddMsgs 归一化（兼容 `{str:...}`/`{string:...}` 字段结构） |
 | status_manager.py | Status | 全局运行状态管理 |

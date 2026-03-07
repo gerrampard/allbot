@@ -77,7 +77,13 @@ async def bot_core():
         logger.success(f"✅ 已启动 {len(adapter_infos)} 个适配器")
 
         logger.success("✅ 服务初始化完成")
-        update_bot_status("ready", "机器人已准备就绪")
+
+        # 重要：869 的微信登录是后台任务。
+        # 若此处强行写 ready，会覆盖 waiting_login/error 等登录态，导致 /qrcode 误判“登录成功”。
+        if login_task is None:
+            update_bot_status("ready", "机器人已准备就绪")
+        else:
+            logger.info("登录任务未完成，保持当前登录状态")
         logger.success("🚀 开始处理消息")
 
         logger.info("👂 开始启动消息监听...")

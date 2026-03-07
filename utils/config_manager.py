@@ -37,6 +37,7 @@ class WechatAPIConfig:
     enable_websocket: bool = False
     ws_url: str = ""
     admin_key: str = ""
+    login_qrcode_proxy: str = ""
     enable_rabbitmq: bool = True
     rabbitmq_host: str = "127.0.0.1"
     rabbitmq_port: int = 5672
@@ -323,6 +324,9 @@ class ConfigManager:
                 redis_db=api_config.get("redis-db", config.wechat_api.redis_db),
                 ws_url=api_config.get("ws-url", config.wechat_api.ws_url),
                 admin_key=api_config.get("admin-key", config.wechat_api.admin_key),
+                login_qrcode_proxy=api_config.get(
+                    "login-qrcode-proxy", config.wechat_api.login_qrcode_proxy
+                ),
                 enable_rabbitmq=api_config.get(
                     "enable-rabbitmq", config.wechat_api.enable_rabbitmq
                 ),

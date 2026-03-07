@@ -1,6 +1,6 @@
 {#
-@input: /api/login/qrcode、/api/bot/status、/api/login/verify_code、/api/login/force_mac_qrcode
-@output: 未登录二维码页面（扫码登录/自动刷新/验证码提交）
+@input: /api/login/qrcode、/api/bot/status、/api/login/verify_code、/api/login/force_mac_qrcode、/api/login/restart_869_flow
+@output: 未登录二维码页面（扫码登录/自动刷新/验证码提交/卡密与代理重入）
 @position: admin/templates 登录入口页面
 @auto-doc: Update header and folder INDEX.md when this file changes
 #}
@@ -330,6 +330,23 @@
                                     <div class="form-text text-muted">
                                         格式: https://login.weixin.qq.com/l/[UUID]
                                     </div>
+
+                                    <hr class="my-3" />
+
+                                    <div class="mb-2">
+                                        <label class="form-label mb-1" for="manual-authkey-input">卡密 key（869）</label>
+                                        <input type="text" class="form-control" id="manual-authkey-input" placeholder="请输入 AuthKey / 卡密 key">
+                                        <div class="form-text text-muted">当无 admin-key 且无缓存登录 key 时，需要手动提供卡密。</div>
+                                    </div>
+
+                                    <div class="mb-2">
+                                        <label class="form-label mb-1" for="manual-qrcode-proxy-input">拉码代理（可选）</label>
+                                        <input type="text" class="form-control" id="manual-qrcode-proxy-input" placeholder="socks5://user:pass@ip:port">
+                                    </div>
+
+                                    <button class="btn btn-outline-primary w-100" type="button" id="btn-restart-869-flow">
+                                        <i class="bi bi-play-circle me-1"></i>提交卡密/代理并重新拉码
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -468,6 +485,51 @@
             }
         });
 
+        // 869：提交卡密 key / 拉码代理并重新进入流程
+        document.getElementById('btn-restart-869-flow').addEventListener('click', async function() {
+            const btn = document.getElementById('btn-restart-869-flow');
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> 处理中...';
+
+            try {
+                const authKey = (document.getElementById('manual-authkey-input') || {}).value || '';
+                const proxy = (document.getElementById('manual-qrcode-proxy-input') || {}).value || '';
+
+                const response = await fetch('/api/login/restart_869_flow', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        auth_key: authKey,
+                        qrcode_proxy: proxy
+                    })
+                });
+                const data = await response.json();
+                if (data && data.success && data.data && data.data.qrcode_url) {
+                    resetQRCode();
+                    document.getElementById('manual-qrcode-container').style.display = 'none';
+                    qrcodeUrl = data.data.qrcode_url;
+                    currentQRCodeUuid = data.data.uuid || currentQRCodeUuid;
+                    currentLoginMode = (data.data.login_mode || '').toString().toLowerCase() || currentLoginMode;
+                    if (currentLoginMode) {
+                        document.getElementById('login-mode-badge').textContent = '模式: ' + currentLoginMode;
+                    }
+                    setQRCodeImage(qrcodeUrl);
+                    initialCountdown = data.data.expires_in || 240;
+                    resetCountdown();
+                    startStatusChecking();
+                } else {
+                    const message = (data && (data.error || data.message)) ? (data.error || data.message) : '提交失败';
+                    alert('重新拉码失败: ' + message);
+                }
+            } catch (e) {
+                alert('重新拉码失败: ' + (e && e.message ? e.message : e));
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        });
+
         // 提交验证码（869）
         document.getElementById('btn-submit-verify-code').addEventListener('click', async function() {
             const input = document.getElementById('verify-code-input');
@@ -579,6 +641,13 @@
 
             console.log('获取二维码响应:', data);  // 调试日志
 
+            if (data.success && data.data && data.data.pending) {
+                updateQRCodeStatus(data.data.message || '二维码生成中，请稍候...');
+                document.getElementById('qrcode-loading').style.display = 'flex';
+                setTimeout(fetchQRCodeUrl, 4000);
+                return;
+            }
+
             // 修复响应数据结构判断逻辑
             if (data.success && data.data && data.data.qrcode_url) {
                 const nextUrl = data.data.qrcode_url;
@@ -605,11 +674,11 @@
                 console.log('成功获取二维码URL:', qrcodeUrl);
             } else {
                 console.error('获取二维码URL失败:', data.error || '未知错误');
-                showQRCodeError('获取二维码失败，请点击刷新按钮重试');
+                updateQRCodeStatus((data && data.error) ? data.error : '二维码暂未就绪，请稍候...');
             }
         } catch (error) {
             console.error('获取二维码URL出错:', error);
-            showQRCodeError('获取二维码失败，请点击刷新按钮重试');
+            updateQRCodeStatus('获取二维码失败，请稍候重试');
         }
     }
 
@@ -783,8 +852,8 @@
                 updateBotStatus(statusData.status);
 
                 // 检查登录状态
-                if (statusData.status === 'online' || statusData.status === 'ready') {
-                    // 已登录成功
+                // 注意：ready 表示系统就绪，不等于微信已登录；避免误判“登录成功”。
+                if (statusData.status === 'online') {
                     showLoginSuccess();
                 } else if (statusData.status === 'waiting_login') {
                     // 等待登录
@@ -803,7 +872,13 @@
                     updateQRCodeStatus('已扫描，请在手机上确认登录');
                 } else if (statusData.status === 'error') {
                     // 登录出错
-                    showQRCodeError(statusData.error_message || '登录失败，请重试');
+                    if (statusData.needs_auth_key) {
+                        showQRCodeError('缺少卡密 key：请填写卡密并提交后重试');
+                        const manualContainer = document.getElementById('manual-qrcode-container');
+                        if (manualContainer) manualContainer.style.display = 'block';
+                    } else {
+                        showQRCodeError(statusData.error_message || statusData.details || '登录失败，请重试');
+                    }
                 }
             }
         } catch (error) {
@@ -824,9 +899,9 @@
             statusDetail.textContent = '已登录';
             statusDetail.className = 'badge bg-success';
         } else if (status === 'ready') {
-            statusDot.classList.add('online');
-            statusText.textContent = '在线';
-            statusDetail.textContent = '准备就绪';
+            statusDot.classList.add('waiting');
+            statusText.textContent = '系统就绪';
+            statusDetail.textContent = '等待微信登录结果';
             statusDetail.className = 'badge bg-info';
         } else if (status === 'waiting_login') {
             statusDot.classList.add('waiting');

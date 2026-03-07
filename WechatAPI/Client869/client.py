@@ -126,6 +126,23 @@ def _pick_first(mapping: Dict[str, Any], keys: Iterable[str], default: Any = Non
 def _looks_like_base64(content: str) -> bool:
     if not content or len(content) % 4 != 0:
         return False
+
+
+def _normalize_proxy_value(proxy: Any) -> str:
+    if proxy is None:
+        return ""
+
+    if isinstance(proxy, str):
+        return proxy.strip()
+
+    proxy_ip = getattr(proxy, "ip", "")
+    proxy_port = getattr(proxy, "port", "")
+    proxy_user = getattr(proxy, "username", "")
+    proxy_password = getattr(proxy, "password", "")
+    if proxy_ip and proxy_port:
+        auth_prefix = f"{proxy_user}:{proxy_password}@" if proxy_user else ""
+        return f"socks5://{auth_prefix}{proxy_ip}:{proxy_port}"
+    return ""
     try:
         base64.b64decode(content, validate=True)
         return True
@@ -605,15 +622,7 @@ class Client869:
         print_qr: bool = False,
     ) -> Tuple[str, str]:
         auth_key = await self.ensure_auth_key()
-        proxy_value = ""
-        if proxy is not None:
-            proxy_ip = getattr(proxy, "ip", "")
-            proxy_port = getattr(proxy, "port", "")
-            proxy_user = getattr(proxy, "username", "")
-            proxy_password = getattr(proxy, "password", "")
-            if proxy_ip and proxy_port:
-                auth_prefix = f"{proxy_user}:{proxy_password}@" if proxy_user else ""
-                proxy_value = f"socks5://{auth_prefix}{proxy_ip}:{proxy_port}"
+        proxy_value = _normalize_proxy_value(proxy) or _normalize_proxy_value(getattr(self, "login_qrcode_proxy", ""))
 
         requested_device = (device_name or "").strip().lower()
         login_device = "mac" if requested_device == "mac" else "ipad"

@@ -1,6 +1,6 @@
 """
 @input: WebSocket 消息流、Redis 队列、消息数据库、XYBot 实例与 resource/robot_stat.json（用于兜底 WS key）
-@output: 标准化 AddMsgs 消息入队并驱动插件处理
+@output: 标准化 AddMsgs 消息入队并驱动插件处理；869 登录恢复时回写状态与缓存
 @position: bot_core 启动流程中的消息接收与分发入口
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
@@ -340,6 +340,120 @@ class MessageListener:
 
         return _first_non_empty(token_key, poll_key, auth_key)
 
+    def _extract_login_payload(self, payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        inner = payload.get("Data")
+        if isinstance(inner, dict):
+            return inner
+        return payload
+
+    def _extract_login_state(self, payload: Any) -> int:
+        data = self._extract_login_payload(payload)
+        for key in (
+            "loginState",
+            "LoginState",
+            "login_state",
+            "LoginStatus",
+            "login_status",
+            "Status",
+            "status",
+            "state",
+            "State",
+        ):
+            value = data.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _extract_login_message(self, payload: Any) -> str:
+        data = self._extract_login_payload(payload)
+        for key in ("loginErrMsg", "LoginErrMsg", "errMsg", "ErrMsg", "message", "Message", "text", "Text"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                for text_key in ("string", "String", "str", "Str", "value", "Value", "text", "Text"):
+                    candidate = value.get(text_key)
+                    if candidate not in (None, ""):
+                        return str(candidate)
+                continue
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
+    def _is_scanned_login(self, payload: Any) -> bool:
+        state = self._extract_login_state(payload)
+        if state == 1:
+            return True
+        message = self._extract_login_message(payload).lower()
+        if not message:
+            return False
+        return any(token in message for token in ("已扫描", "扫码", "scan", "scanned", "等待确认", "confirm", "确认"))
+
+    def _save_robot_stat_from_bot(self, bot: Any):
+        if bot is None:
+            return
+        stat_path = self.script_dir / "resource" / "robot_stat.json"
+        current: Dict[str, Any] = {}
+        if stat_path.exists():
+            try:
+                with open(stat_path, "r", encoding="utf-8") as file:
+                    loaded = json.load(file)
+                if isinstance(loaded, dict):
+                    current = loaded
+            except Exception:
+                current = {}
+
+        auth_keys = getattr(bot, "auth_keys", None)
+        if isinstance(auth_keys, list):
+            auth_keys = [str(x).strip() for x in auth_keys if str(x).strip()]
+        else:
+            auth_keys = []
+        auth_key = str(getattr(bot, "auth_key", "") or "").strip()
+        if auth_key and auth_key not in auth_keys:
+            auth_keys.insert(0, auth_key)
+
+        payload = {
+            "wxid": str(getattr(bot, "wxid", "") or "").strip(),
+            "device_name": str(getattr(bot, "device_type", "") or getattr(bot, "device_name", "") or "").strip(),
+            "device_id": str(getattr(bot, "device_id", "") or "").strip(),
+            "auth_key": auth_key,
+            "auth_keys": auth_keys,
+            "token_key": str(getattr(bot, "token_key", "") or "").strip(),
+            "poll_key": str(getattr(bot, "poll_key", "") or "").strip(),
+            "display_uuid": str(getattr(bot, "display_uuid", "") or "").strip(),
+            "login_tx_id": str(getattr(bot, "login_tx_id", "") or "").strip(),
+            "data62": str(getattr(bot, "data62", "") or "").strip(),
+            "ticket": str(getattr(bot, "ticket", "") or "").strip(),
+            "device_type": str(getattr(bot, "device_type", "") or "").strip(),
+        }
+        for key, value in payload.items():
+            if value in (None, "", []):
+                continue
+            current[key] = value
+
+        try:
+            stat_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(stat_path, "w", encoding="utf-8") as file:
+                json.dump(current, file, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _resolve_qrcode_url_from_bot(self, bot: Any) -> str:
+        if bot is None:
+            return ""
+        for attr in ("qrcode_url", "qr_url", "login_qrcode_url"):
+            value = str(getattr(bot, attr, "") or "").strip()
+            if value:
+                return value
+        display_uuid = str(getattr(bot, "display_uuid", "") or "").strip()
+        if display_uuid:
+            return f"http://weixin.qq.com/x/{display_uuid}"
+        return ""
+
     async def start_listening(self, message_db):
         api_config = self.config.wechat_api
         protocol_version = str(self.config.protocol.version).lower()
@@ -366,9 +480,19 @@ class MessageListener:
                             bot = getattr(self.xybot, "bot", None)
                             while True:
                                 try:
+                                    payload = None
+                                    if bot is not None and hasattr(bot, "check_login_uuid"):
+                                        try:
+                                            _, payload = await bot.check_login_uuid(
+                                                getattr(bot, "poll_key", "") or getattr(bot, "display_uuid", "") or ""
+                                            )
+                                        except Exception:
+                                            payload = None
                                     if bot is not None and await bot.is_logged_in(None):
                                         try:
                                             from bot_core.status_manager import update_bot_status
+                                            login_mode = str(getattr(bot, "device_type", "") or "").strip().lower()
+                                            device_id = str(getattr(bot, "device_id", "") or "").strip()
 
                                             if hasattr(bot, "get_profile"):
                                                 await bot.get_profile()
@@ -381,12 +505,39 @@ class MessageListener:
                                                     "nickname": getattr(bot, "nickname", "") or "",
                                                     "wxid": getattr(bot, "wxid", "") or "",
                                                     "alias": getattr(bot, "alias", "") or "",
+                                                    "login_mode": login_mode,
+                                                    "device_id": device_id,
                                                 },
                                             )
+                                            self._save_robot_stat_from_bot(bot)
                                         except Exception:
                                             pass
                                         logger.success("检测到 869 后续登录成功，继续启动主 WS")
                                         break
+                                    if payload and self._is_scanned_login(payload):
+                                        try:
+                                            from bot_core.status_manager import update_bot_status
+                                            login_mode = str(getattr(bot, "device_type", "") or "").strip().lower()
+                                            device_id = str(getattr(bot, "device_id", "") or "").strip()
+                                            qrcode_url = self._resolve_qrcode_url_from_bot(bot)
+
+                                            update_bot_status(
+                                                "scanned",
+                                                "已扫描，请在手机上确认登录",
+                                                {
+                                                    "protocol_version": "869",
+                                                    "nickname": getattr(bot, "nickname", "") or "",
+                                                    "wxid": getattr(bot, "wxid", "") or "",
+                                                    "alias": getattr(bot, "alias", "") or "",
+                                                    "data62": getattr(bot, "data62", "") or "",
+                                                    "ticket": getattr(bot, "ticket", "") or "",
+                                                    "qrcode_url": qrcode_url,
+                                                    "login_mode": login_mode,
+                                                    "device_id": device_id,
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     pass
                                 await asyncio.sleep(3)

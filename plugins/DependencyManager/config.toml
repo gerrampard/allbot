@@ -30,3 +30,5 @@ uninstall = "!pip uninstall"
 github_install = "github" 
 # 插件市场查询命令前缀（分页：插件查询 1 / 插件查询 2 ...）
 market_query = "插件查询"
+# 插件市场提交命令前缀（提交插件审核）
+market_submit = "插件提交"

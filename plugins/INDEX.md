@@ -16,4 +16,4 @@
 | Dify/ | Plugin | Dify 接入相关插件 |
 | Protocol869Demo/ | Plugin | 869 客户端能力示例（拍一拍/撤回/二维码/标签/群信息/动态调用） |
 | RevokeBotMessage/ | Plugin | 撤回机器人消息（引用机器人消息 + 发送“撤回”撤回引用消息；记录发送回执） |
-| DependencyManager/ | Plugin | 依赖/插件安装管理（pip 安装/卸载/查询；GitHub 插件安装；插件市场查询与缓存） |
+| DependencyManager/ | Plugin | 依赖/插件安装管理（pip 安装/卸载/查询；GitHub 插件安装；插件市场查询/提交与缓存） |

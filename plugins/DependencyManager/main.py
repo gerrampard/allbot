@@ -1,7 +1,7 @@
 """
 @input: WechatAPIClient 消息回调、插件配置、插件市场 API
-@output: 依赖/插件安装与插件市场查询响应；插件市场缓存落盘
-@position: 插件管理辅助能力（依赖安装、插件安装、插件市场查询）
+@output: 依赖/插件安装与插件市场查询/提交响应；插件市场缓存落盘
+@position: 插件管理辅助能力（依赖安装、插件安装、插件市场查询/提交）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
 依赖包管理插件 - 允许管理员通过微信命令安装Python依赖包和Github插件
@@ -20,6 +20,7 @@ import re
 import shutil
 from pathlib import Path
 import tempfile
+from urllib.parse import urlparse
 from loguru import logger
 import requests
 import zipfile
@@ -58,6 +59,7 @@ class DependencyManager(PluginBase):
 
         # 插件市场配置（默认值，可被 config.toml 覆盖）
         self.market_query_cmd = "插件查询"
+        self.market_submit_cmd = "插件提交"
         self.market_page_size = 5
         self.market_cache_path = os.path.join(self.plugin_dir, "plugin_market_cache.json")
         self.market_cache_timeout_seconds = 3600
@@ -95,6 +97,7 @@ class DependencyManager(PluginBase):
             # 读取插件安装配置 - 使用唤醒词
             self.github_install_prefix = cmd_config.get("github_install", "github")
             self.market_query_cmd = cmd_config.get("market_query", "插件查询")
+            self.market_submit_cmd = cmd_config.get("market_submit", "插件提交")
             
             logger.critical(f"[DependencyManager] 配置加载成功")
             logger.critical(f"[DependencyManager] 启用状态: {self.enable}")
@@ -113,6 +116,142 @@ class DependencyManager(PluginBase):
             self.uninstall_cmd = "!pip uninstall"
             self.github_install_prefix = "github"
             self.market_query_cmd = "插件查询"
+            self.market_submit_cmd = "插件提交"
+
+    def _market_source_id(self, base_url: str) -> str:
+        base = (base_url or "").strip()
+        if not base:
+            return "unknown"
+        if base.startswith("http://") or base.startswith("https://"):
+            parsed = urlparse(base)
+            if parsed.netloc:
+                return parsed.netloc
+        return base.replace("http://", "").replace("https://", "").strip("/")
+
+    def _split_list(self, raw_value: str) -> list:
+        if not raw_value:
+            return []
+        items = re.split(r"[,\n，;；]+", raw_value)
+        return [item.strip() for item in items if item and item.strip()]
+
+    def _normalize_market_github_url(self, github_url: str) -> str:
+        url = (github_url or "").strip()
+        if not url:
+            return ""
+        if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", url):
+            return f"https://github.com/{url}"
+        if url.startswith("github.com"):
+            return f"https://{url}"
+        if "github.com" in url and not url.startswith("http"):
+            return f"https://{url}"
+        return url
+
+    def _build_market_submit_help(self) -> str:
+        return (
+            "插件提交格式：\n"
+            "插件提交 名称|简介|作者|版本|GitHub地址|标签(可选)|依赖(可选)\n"
+            "示例：\n"
+            "插件提交 依赖管理器|用于安装插件|老夏|1.0.0|https://github.com/xxx/yyy|工具,运维|requests>=2.32\n"
+        )
+
+    def _parse_market_submit(self, args: str, sender_id: str) -> tuple:
+        parts = [item.strip() for item in (args or "").split("|")]
+        while parts and parts[-1] == "":
+            parts.pop()
+        if len(parts) < 5:
+            return None, "参数不足，请至少填写名称、简介、作者、版本、GitHub地址"
+
+        name, description, author, version, github_url = parts[:5]
+        if not all([name, description, author, version, github_url]):
+            return None, "必填字段不能为空"
+
+        tags = self._split_list(parts[5]) if len(parts) > 5 else []
+        requirements = self._split_list(parts[6]) if len(parts) > 6 else []
+        normalized_github = self._normalize_market_github_url(github_url)
+        if not normalized_github:
+            return None, "GitHub 地址无效"
+
+        plugin_data = {
+            "name": name,
+            "description": description,
+            "author": author,
+            "version": version,
+            "github_url": normalized_github,
+            "tags": tags,
+            "requirements": requirements,
+            "submitted_by": sender_id,
+            "submitted_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+        return plugin_data, None
+
+    def _truncate_text(self, text: str, limit: int = 200) -> str:
+        if text is None:
+            return ""
+        text = str(text).strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "..."
+
+    def _submit_market_plugin(self, plugin_data: dict) -> dict:
+        base_urls = self._plugin_market_base_urls()
+        if not base_urls:
+            return {"success": False, "error": "未配置插件市场地址"}
+
+        headers = {
+            "User-Agent": "XYBot/DependencyManager",
+            "Content-Type": "application/json",
+        }
+        results = {}
+        success_count = 0
+        for base_url in base_urls:
+            source_id = self._market_source_id(base_url)
+            url = self._build_market_url(base_url, "/plugins/")
+            try:
+                response = requests.post(url, json=plugin_data, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    results[source_id] = {"success": True, "base_url": base_url}
+                    success_count += 1
+                else:
+                    error_text = self._truncate_text(response.text)
+                    results[source_id] = {
+                        "success": False,
+                        "base_url": base_url,
+                        "error": f"{response.status_code} - {error_text}",
+                    }
+            except Exception as e:
+                results[source_id] = {
+                    "success": False,
+                    "base_url": base_url,
+                    "error": self._truncate_text(str(e)),
+                }
+
+        if success_count > 0:
+            return {
+                "success": True,
+                "partial": success_count != len(base_urls),
+                "results": results,
+            }
+        return {"success": False, "error": "插件市场提交失败", "results": results}
+
+    def _format_market_submit_result(self, result: dict) -> str:
+        if not result.get("success"):
+            lines = [f"❌ 插件提交失败：{result.get('error', '未知错误')}"]
+        else:
+            if result.get("partial"):
+                lines = ["✅ 插件已提交（部分市场失败）"]
+            else:
+                lines = ["✅ 插件已提交到插件市场"]
+
+        results = result.get("results") or {}
+        for source_id, detail in results.items():
+            if detail.get("success"):
+                lines.append(f"{source_id}：成功")
+            else:
+                error_text = detail.get("error", "未知错误")
+                lines.append(f"{source_id}：失败（{error_text}）")
+
+        return "\n".join(lines)
     
     def load_github_proxy(self):
         """加载主配置中的 GitHub 反代设置"""
@@ -391,7 +530,25 @@ class DependencyManager(PluginBase):
             logger.info("[DependencyManager] GeminiImage快捷安装完成，阻止后续插件处理")
             return False
 
-        # 2.5 插件市场查询命令（插件查询）
+        # 2.5 插件市场提交命令（插件提交）
+        if content.startswith(self.market_submit_cmd):
+            args = content.replace(self.market_submit_cmd, "", 1).strip()
+            if not args or args.lower() in {"help", "帮助", "?", "说明"}:
+                await bot.send_text_message(conversation_id, self._build_market_submit_help())
+                return False
+
+            plugin_data, error = self._parse_market_submit(args, sender_id)
+            if error:
+                await bot.send_text_message(conversation_id, f"⚠️ {error}\n\n{self._build_market_submit_help()}")
+                return False
+
+            await bot.send_text_message(conversation_id, "🔄 正在提交插件到市场，请稍候...")
+            result = await asyncio.to_thread(self._submit_market_plugin, plugin_data)
+            await bot.send_text_message(conversation_id, self._format_market_submit_result(result))
+            logger.info("[DependencyManager] 插件提交命令处理完成")
+            return False
+
+        # 2.6 插件市场查询命令（插件查询）
         if content.startswith(self.market_query_cmd):
             args = content.replace(self.market_query_cmd, "", 1).strip()
             page = 1

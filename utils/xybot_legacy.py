@@ -1,6 +1,6 @@
 """
 @input: WechatAPIClient/Client869 实例、原始 AddMsg 消息字典与本地 files 缓存目录
-@output: 旧版 XYBot 消息处理实现（图片/语音/XML/文件等），供 utils.xybot.core 兼容委托
+@output: 旧版 XYBot 消息处理实现（图片/语音/XML/文件等），供 utils.xybot.core 兼容委托；文件消息解析对缺失 `fileext` 的 XML 也能继续提取 `title/attachid` 并触发后续下载
 @position: 历史兼容层：承载未拆分的消息处理逻辑与媒体落盘（files/）
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
@@ -1659,9 +1659,19 @@ class XYBot:
         """处理文件消息"""
         try:
             root = ET.fromstring(message["Content"])
-            filename = root.find("appmsg").find("title").text
-            attach_id = root.find("appmsg").find("appattach").find("attachid").text
-            file_extend = root.find("appmsg").find("appattach").find("fileext").text
+            appmsg = root.find("appmsg")
+            appattach = appmsg.find("appattach") if appmsg is not None else None
+            title_node = appmsg.find("title") if appmsg is not None else None
+            attach_node = appattach.find("attachid") if appattach is not None else None
+            ext_node = appattach.find("fileext") if appattach is not None else None
+
+            filename = (title_node.text or "").strip() if title_node is not None and title_node.text else ""
+            attach_id = (attach_node.text or "").strip() if attach_node is not None and attach_node.text else ""
+            file_extend = (ext_node.text or "").strip() if ext_node is not None and ext_node.text else ""
+            if not file_extend and filename:
+                file_extend = Path(filename).suffix.lstrip(".")
+            if not filename or not attach_id:
+                raise ValueError("缺少文件名或 attach_id")
         except Exception as e:
             logger.error("解析文件消息失败: {}, 内容: {}", e, message["Content"])
             return

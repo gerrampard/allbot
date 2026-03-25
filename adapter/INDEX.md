@@ -2,7 +2,7 @@
 
 # adapter
 
-多平台适配层：负责把外部平台消息统一写入 `allbot` 队列，并从平台专属 `replyQueue` 消费回复。
+多平台适配层：负责把外部平台消息统一写入 `allbot` 队列，并从平台专属 `replyQueue` 消费回复，覆盖 QQ、Telegram、Web、Win、wx-filehelper 与微信 clawbot 渠道。
 
 ## Files
 
@@ -12,6 +12,7 @@
 | base.py | Core | 通用日志工具 `AdapterLogger` |
 | loader.py | Core | 扫描 `adapter/*/config.toml` 并启动启用适配器（内置 web 预实例去重） |
 | qq/qq_adapter.py | Platform | QQ/NapCat 协议桥接 |
+| ocwx/ocwx_adapter.py | Platform | 微信 clawbot 渠道桥接（OpenClaw Weixin，多账号扫码登录与 ReplyQueue 回写） |
 | tg/telegram_adapter.py | Platform | Telegram Bot API 协议桥接 |
 | web/web_adapter.py | Platform | Web 管理后台对话桥接 |
 | win/win_adapter.py | Platform | Win 协议桥接 |

@@ -15,4 +15,5 @@
 | qrcode_routes.py | Login | 二维码页面与登录辅助 API（获取二维码、验证码提交、mac 拉码含在线判定、卡密/代理重入 869 登录；卡密提交会尝试唤醒登录缓存并在线直登写回状态缓存） |
 | files.py | API | 文件上传/下载/列表 API |
 | plugins.py | API | 插件管理与插件市场 API（双市场聚合、去重保留高版本、双源提交与失败重试） |
+| version_routes.py | Update | 版本检查与框架更新 API（统一委托 `utils/framework_actions.py`，并通过进度管理器推送状态） |
 | message_routes.py | Compat | 旧前端兼容：`/api/send_message`、`/api/group/announcement`；并补充 869 专属：撤回、拍一拍、同步、二维码、标签、群信息、表情下载、动态调用等端点（全部做 869 协议校验） |

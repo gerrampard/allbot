@@ -25,8 +25,8 @@ def register_version_routes(app, get_version_info, current_dir,
         has_update_manager: 是否有更新管理器
     """
     from admin.utils import require_auth
-    from utils.github_proxy import get_github_url
     from admin.restart_api import restart_system as restart_system_func
+    from utils.framework_actions import update_framework
 
     # 插件市场API配置
     PLUGIN_MARKET_API = {
@@ -35,17 +35,16 @@ def register_version_routes(app, get_version_info, current_dir,
 
     async def _run_update_and_restart(version_info):
         """
-        执行带进度更新并在完成后触发统一的重启流程
+        执行统一更新逻辑并在完成后触发统一的重启流程
         """
         try:
-            from admin.update_with_progress import update_with_progress
-
-            await update_with_progress(
-                version_info,
-                update_progress_manager,
-                get_github_url,
-                current_dir,
+            result = await update_framework(
+                progress_manager=update_progress_manager,
+                auto_restart=False,
             )
+            if result.get("success") != "true":
+                logger.error(f"更新流程执行失败: {result.get('message', '未知错误')}")
+                return
 
             # 更新完成后等待 3 秒，保证日志和前端进度显示完成
             await asyncio.sleep(3)
@@ -177,7 +176,7 @@ def register_version_routes(app, get_version_info, current_dir,
                 logger.error("更新进度管理器不可用，无法执行更新")
                 return {"success": False, "error": "更新进度管理器不可用"}
 
-            # 启动带进度的更新流程并在完成后通过统一重启接口重启系统
+            # 启动统一更新流程并在完成后通过统一重启接口重启系统
             asyncio.create_task(_run_update_and_restart(version_info))
 
             return {
@@ -219,7 +218,7 @@ def register_version_routes(app, get_version_info, current_dir,
 
     @app.post("/api/update_bot", response_class=JSONResponse, tags=["系统"])
     async def api_update_bot(request: Request, username: str = Depends(require_auth)):
-        """兼容旧前端：触发更新并重启（复用 update_with_progress 流程）"""
+        """兼容旧前端：触发更新并重启（复用统一 update_framework 流程）"""
         try:
             version_info = get_version_info()
             if not (version_info.get("update_available") or version_info.get("force_update")):

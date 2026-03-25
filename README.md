@@ -31,7 +31,7 @@ AllBot 是一个**支持多平台的智能机器人系统**，采用插件化架
 
 - 🎯 **插件化架构**：内置 13 个插件（`plugins/`），支持热加载，并可通过插件市场安装更多
 - 🤖 **多 AI 平台**：Dify、OpenAI、FastGPT、SiliconFlow 等
-- 🌐 **多平台支持**：微信、QQ、Telegram、Web、Windows
+- 🌐 **多平台支持**：微信、微信 clawbot 渠道（ocwx）、QQ、Telegram、Web、Windows
 - 💻 **Web 管理后台**：FastAPI + Bootstrap 5 现代化界面
 - 🐳 **容器化部署**：Docker Compose 一键启动
 - ⚡ **高性能异步**：全异步架构，优先级调度（0-99）
@@ -46,7 +46,7 @@ Python 3.11+ | FastAPI | SQLite + Redis | RabbitMQ | APScheduler | Loguru | Boot
 - [用户手册](docs/用户手册.md) - 完整使用指南
 - [配置指南](docs/配置指南.md) - 详细配置说明
 - [插件列表](docs/插件列表.md) - 插件市场与可用插件概览
-- [多平台适配器](docs/multi-platform-adapter.md) - QQ/Telegram/Web/Win
+- [多平台适配器](docs/multi-platform-adapter.md) - QQ/Telegram/Web/Win/ocwx
 
 ### 开发文档
 - [系统架构文档](docs/系统架构文档.md) - 架构设计
@@ -59,6 +59,7 @@ Python 3.11+ | FastAPI | SQLite + Redis | RabbitMQ | APScheduler | Loguru | Boot
 | 平台 | 协议 | 说明 |
 |------|------|------|
 | **微信** | 869/pad/ipad/mac/win 等 | 多协议版本支持 |
+| **微信 clawbot 渠道（ocwx）** | openclaw-weixin HTTP JSON | 多账号扫码登录与 ReplyQueue 回写 |
 | **QQ** | NTQQ | 私聊和群聊 |
 | **Telegram** | Bot API | 长轮询/Webhook |
 | **Web** | WebSocket/HTTP | 管理后台聊天 |
@@ -250,7 +251,7 @@ option_1 = "value"
 ```
 AllBot/
 ├── admin/              # 管理后台（FastAPI + Bootstrap 5）
-├── adapter/            # 多平台适配器（QQ/TG/Web/Win）
+├── adapter/            # 多平台适配器（QQ/TG/Web/Win/ocwx/wx）
 ├── plugins/            # 内置插件（默认 13 个，可通过插件市场扩展）
 ├── database/           # 数据持久化（SQLite + Redis）
 ├── utils/              # 工具模块（插件管理、事件系统）

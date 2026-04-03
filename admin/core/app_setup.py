@@ -17,6 +17,7 @@ AllBot 管理后台 - 核心应用设置模块
 import os
 import sys
 import json
+import secrets
 import time
 from datetime import datetime
 from typing import Optional, List, Any
@@ -73,6 +74,8 @@ config = {
     "password": "admin123",
     "debug": False,
     "secret_key": "xybotv2_admin_secret_key",
+    "session_cookie_secure": False,
+    "cors_origins": [],
     "max_history": 1000,
     "log_level": "INFO"
 }
@@ -144,9 +147,24 @@ def load_config():
                 main_config = tomllib.load(f)
                 if "Admin" in main_config:
                     admin_config = main_config["Admin"]
-                    for key in ["host", "port", "username", "password", "debug", "log_level"]:
-                        if key in admin_config:
-                            config[key] = admin_config[key]
+                    field_map = {
+                        "host": ("host",),
+                        "port": ("port",),
+                        "username": ("username",),
+                        "password": ("password",),
+                        "debug": ("debug",),
+                        "log_level": ("log_level", "log-level"),
+                        "secret_key": ("secret_key", "secret-key"),
+                        "session_cookie_secure": ("session_cookie_secure", "session-cookie-secure"),
+                    }
+                    for config_key, candidates in field_map.items():
+                        for candidate in candidates:
+                            if candidate in admin_config:
+                                config[config_key] = admin_config[candidate]
+                                break
+                    cors_origins = admin_config.get("cors_origins", admin_config.get("cors-origins"))
+                    if isinstance(cors_origins, list):
+                        config["cors_origins"] = [str(item).strip() for item in cors_origins if str(item).strip()]
                     if "log_level" in admin_config:
                         set_log_level(admin_config["log_level"])
                     logger.info(f"从 main_config.toml 加载管理后台配置: {main_config_path}")
@@ -166,22 +184,52 @@ def load_config():
             "ADMIN_PASSWORD": "password",
             "ADMIN_HOST": "host",
             "ADMIN_PORT": "port",
-            "ADMIN_DEBUG": "debug"
+            "ADMIN_DEBUG": "debug",
+            "ADMIN_SECRET_KEY": "secret_key",
+            "ADMIN_COOKIE_SECURE": "session_cookie_secure",
         }
 
         for env_key, config_key in env_mappings.items():
             if env_key in os.environ:
                 if config_key == "port" and os.environ[env_key].isdigit():
                     config[config_key] = int(os.environ[env_key])
-                elif config_key == "debug":
+                elif config_key in {"debug", "session_cookie_secure"}:
                     config[config_key] = os.environ[env_key].lower() in ("true", "1", "yes")
                 else:
                     config[config_key] = os.environ[env_key]
                 logger.info(f"从环境变量 {env_key} 加载配置")
 
+        cors_origins = os.environ.get("ADMIN_CORS_ORIGINS", "")
+        if cors_origins.strip():
+            config["cors_origins"] = [item.strip() for item in cors_origins.split(",") if item.strip()]
+
     except Exception as e:
         logger.error(f"加载管理后台配置失败: {str(e)}")
         logger.warning("使用默认配置")
+
+
+def _assert_secure_admin_config():
+    """拒绝以默认高风险凭据启动管理后台。"""
+    default_passwords = {"admin123", "change_me", "admin"}
+    default_secret_keys = {
+        "xybotv2_admin_secret_key",
+        "admin_secret_key",
+        "change_me",
+        "change_me_to_a_random_secret",
+    }
+
+    username = str(config.get("username", "") or "").strip()
+    password = str(config.get("password", "") or "").strip()
+    secret_key = str(config.get("secret_key", "") or "").strip()
+
+    errors = []
+    if username == "admin" and password in default_passwords:
+        errors.append("管理后台仍在使用默认账号口令，请修改 [Admin].username/password")
+    if secret_key in default_secret_keys or len(secret_key) < 24:
+        errors.append("管理后台 secret_key 过弱或仍为默认值，请修改 [Admin].secret-key")
+
+    if errors:
+        raise RuntimeError("；".join(errors))
 
 
 def verify_credentials(credentials: HTTPBasicCredentials):
@@ -287,6 +335,7 @@ def get_version_info():
 def create_app() -> FastAPI:
     """创建并配置 FastAPI 应用实例"""
     global app, templates
+    _assert_secure_admin_config()
 
     # 创建 FastAPI 应用
     app = FastAPI(
@@ -348,9 +397,12 @@ def create_app() -> FastAPI:
 
     # 添加中间件
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+    cors_origins = config.get("cors_origins") or []
+    if not isinstance(cors_origins, list):
+        cors_origins = []
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins or ["http://127.0.0.1", "http://localhost"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -367,6 +419,7 @@ def create_app() -> FastAPI:
 
     # 初始化 app.state 依赖注入
     init_app_state(app)
+    app.state.login_challenges = {}
 
     # 统一注册路由（避免在多个位置重复注册导致冲突）
     try:

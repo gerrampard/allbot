@@ -1,13 +1,16 @@
 """
-文件管理路由模块
-
-职责：处理文件上传、下载、删除、解压等 API
+@input: FastAPI app、认证依赖、路径安全校验、项目文件白名单根目录
+@output: 文件管理 API（白名单目录读写、上传下载、插件配置初始化）
+@position: 管理后台文件访问边界层，负责将高权限文件操作限制在受控目录内
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import os
 import json
 import time
 import zipfile
 import mimetypes
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List
 from fastapi import Request, UploadFile, File, Form, Depends
@@ -25,6 +28,42 @@ def register_files_routes(app, current_dir):
         current_dir: 当前目录路径
     """
     from admin.utils import require_auth, validate_path_safety
+
+    root_dir = Path(current_dir).parent.resolve()
+    allowed_roots = [
+        root_dir / "plugins",
+        root_dir / "adapter",
+        root_dir / "database",
+        root_dir / "resource",
+        root_dir / "files",
+        root_dir / "logs",
+        root_dir / "temp",
+        root_dir / "admin" / "_cache",
+        root_dir / "main_config.toml",
+        root_dir / "version.json",
+        root_dir / "docker-compose.yml",
+        root_dir / "docker-compose.local.yml",
+    ]
+    allowed_root_map = {
+        "/" + str(path.relative_to(root_dir)).replace("\\", "/"): path.resolve(strict=False)
+        for path in allowed_roots
+    }
+
+    def _normalize_relative_path(raw_path: str) -> str:
+        path = str(raw_path or "").strip().replace("\\", "/")
+        if not path.startswith("/"):
+            path = "/" + path
+        return path
+
+    def _resolve_allowed_path(raw_path: str, path_description: str = "文件"):
+        path = _normalize_relative_path(raw_path)
+        full_path = (root_dir / path.lstrip("/")).resolve(strict=False)
+        for allowed_root in allowed_roots:
+            allowed_root_resolved = allowed_root.resolve(strict=False)
+            error = validate_path_safety(full_path, allowed_root_resolved, path_description)
+            if error is None:
+                return path, full_path
+        return path, None
 
     @app.get("/media/files/{filename:path}")
     async def public_media_file(filename: str):
@@ -54,19 +93,41 @@ def register_files_routes(app, current_dir):
             logger.debug(f"请求获取文件列表：路径 {path}，页码 {page}，每页数量 {limit}")
 
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
+            path = _normalize_relative_path(path)
+            if path == "/":
+                items = []
+                for rel_path, allowed_path in sorted(allowed_root_map.items()):
+                    if not allowed_path.exists():
+                        continue
+                    item_type = 'directory' if allowed_path.is_dir() else 'file'
+                    item_stat = allowed_path.stat()
+                    items.append({
+                        'name': rel_path.strip('/'),
+                        'path': rel_path,
+                        'type': item_type,
+                        'size': item_stat.st_size if allowed_path.is_file() else 0,
+                        'modified': int(item_stat.st_mtime),
+                    })
+                return JSONResponse(content={
+                    'success': True,
+                    'items': items,
+                    'pagination': {
+                        'page': 1,
+                        'limit': limit,
+                        'total_items': len(items),
+                        'total_pages': 1,
+                    }
+                })
 
-            # 获取完整路径 - 从项目根目录开始
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
+            path, full_path = _resolve_allowed_path(path, "目录")
 
             logger.debug(f"处理文件列表路径: {path} -> {full_path}")
 
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许访问受控目录或配置文件'
+                })
 
             # 检查路径是否存在
             if not os.path.exists(full_path):
@@ -184,9 +245,6 @@ def register_files_routes(app, current_dir):
         """获取文件夹树结构"""
         # 使用会话验证
         try:
-            # 获取项目根目录
-            root_dir = Path(current_dir).parent
-
             # 递归构建文件夹树
             def build_tree(dir_path, rel_path='/'):
                 tree = {
@@ -216,8 +274,16 @@ def register_files_routes(app, current_dir):
 
                 return tree
 
-            # 构建树结构
-            tree = build_tree(root_dir)
+            tree = {
+                'name': 'allowed',
+                'path': '/',
+                'type': 'directory',
+                'children': [],
+            }
+            for rel_path, allowed_path in sorted(allowed_root_map.items()):
+                if not allowed_path.exists() or not allowed_path.is_dir():
+                    continue
+                tree['children'].append(build_tree(str(allowed_path), rel_path))
 
             return JSONResponse(content={'success': True, 'tree': tree})
 
@@ -240,41 +306,19 @@ def register_files_routes(app, current_dir):
                 })
 
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            path, full_path = _resolve_allowed_path(path, "文件")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许读取受控目录或配置文件'
+                })
 
             # 检查文件是否存在
             if not os.path.exists(full_path):
-                # 如果是插件配置文件，尝试创建一个空的配置文件
-                rel_path = str(full_path.relative_to(root_dir))
-                if 'plugins' in rel_path and rel_path.endswith('config.toml'):
-                    try:
-                        # 确保目录存在
-                        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                        # 创建空的配置文件
-                        with open(full_path, 'w', encoding='utf-8') as f:
-                            f.write("# 插件配置文件\n\n[basic]\n# 是否启用插件\nenable = true\n")
-                        logger.info(f"创建了新的插件配置文件: {full_path}")
-                    except Exception as e:
-                        logger.error(f"创建插件配置文件失败: {str(e)}")
-                        return JSONResponse(status_code=404, content={
-                            'success': False,
-                            'message': f'文件不存在且无法创建: {path}'
-                        })
-                else:
-                    return JSONResponse(status_code=404, content={
-                        'success': False,
-                        'message': '文件不存在'
-                    })
+                return JSONResponse(status_code=404, content={
+                    'success': False,
+                    'message': '文件不存在'
+                })
 
             # 检查是否是文件
             if not os.path.isfile(full_path):
@@ -324,17 +368,12 @@ def register_files_routes(app, current_dir):
                 })
 
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            path, full_path = _resolve_allowed_path(path, "文件")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许写入受控目录或配置文件'
+                })
 
             # 确保父目录存在
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -384,18 +423,12 @@ def register_files_routes(app, current_dir):
                     'message': '未提供路径'
                 })
 
-            # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            path, full_path = _resolve_allowed_path(path, "文件")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许在受控目录中创建文件或文件夹'
+                })
 
             # 检查文件是否已存在
             if os.path.exists(full_path):
@@ -426,6 +459,48 @@ def register_files_routes(app, current_dir):
                 'message': f'创建文件或文件夹失败: {str(e)}'
             })
 
+    @app.post("/api/files/init_plugin_config")
+    async def api_init_plugin_config(request: Request, username: str = Depends(require_auth)):
+        """初始化插件配置文件。"""
+        try:
+            data = await request.json()
+            path = data.get('path')
+            if not path:
+                return JSONResponse(status_code=400, content={
+                    'success': False,
+                    'message': '未提供文件路径'
+                })
+
+            path, full_path = _resolve_allowed_path(path, "文件")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许初始化受控目录中的插件配置文件'
+                })
+
+            rel_path = str(full_path.relative_to(root_dir)).replace("\\", "/")
+            if not rel_path.startswith("plugins/") or not rel_path.endswith("config.toml"):
+                return JSONResponse(status_code=400, content={
+                    'success': False,
+                    'message': '仅支持初始化 plugins/*/config.toml'
+                })
+
+            if full_path.exists():
+                return JSONResponse(content={'success': True, 'message': '配置文件已存在'})
+
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write("# 插件配置文件\n\n[basic]\n# 是否启用插件\nenable = true\n")
+
+            logger.info(f"已初始化插件配置文件: {path}")
+            return JSONResponse(content={'success': True, 'message': '配置文件已创建'})
+        except Exception as e:
+            logger.error(f"初始化插件配置文件失败: {str(e)}")
+            return JSONResponse(status_code=500, content={
+                'success': False,
+                'message': f'初始化插件配置文件失败: {str(e)}'
+            })
+
     @app.post("/api/files/delete")
     async def api_files_delete(request: Request, username: str = Depends(require_auth)):
         """删除文件或文件夹"""
@@ -453,17 +528,12 @@ def register_files_routes(app, current_dir):
                 })
 
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            path, full_path = _resolve_allowed_path(path, "文件")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许删除受控目录或配置文件'
+                })
 
             # 检查文件或文件夹是否存在
             if not os.path.exists(full_path):
@@ -517,24 +587,13 @@ def register_files_routes(app, current_dir):
                 })
 
             # 处理相对路径
-            if not old_path.startswith('/'):
-                old_path = '/' + old_path
-            if not new_path.startswith('/'):
-                new_path = '/' + new_path
-
-            # 获取完整路径
-            root_dir = Path(current_dir).parent
-            old_full_path = root_dir / old_path.lstrip('/')
-            new_full_path = root_dir / new_path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(old_full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
-
-            error = validate_path_safety(new_full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            old_path, old_full_path = _resolve_allowed_path(old_path, "文件")
+            new_path, new_full_path = _resolve_allowed_path(new_path, "文件")
+            if old_full_path is None or new_full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许重命名受控目录或配置文件'
+                })
 
             # 检查旧文件是否存在
             if not os.path.exists(old_full_path):
@@ -572,19 +631,14 @@ def register_files_routes(app, current_dir):
         # 使用会话验证
         try:
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径 - 从项目根目录开始
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
+            path, full_path = _resolve_allowed_path(path, "位置")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许上传到受控目录'
+                })
 
             logger.debug(f"用户 {username} 请求上传文件到路径: {path} -> {full_path}")
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "位置")
-            if error:
-                return JSONResponse(status_code=403, content=error)
 
             # 检查路径是否存在且是目录
             if not os.path.exists(full_path):
@@ -774,17 +828,12 @@ def register_files_routes(app, current_dir):
                 })
 
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            path, full_path = _resolve_allowed_path(path, "文件")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许下载受控目录或配置文件'
+                })
 
             # 检查文件是否存在
             if not os.path.exists(full_path):
@@ -829,27 +878,15 @@ def register_files_routes(app, current_dir):
         """解压压缩文件到指定目录"""
         try:
             # 处理相对路径
-            if not file_path.startswith('/'):
-                file_path = '/' + file_path
-
-            if not destination.startswith('/'):
-                destination = '/' + destination
-
-            # 获取完整路径 - 从项目根目录开始
-            root_dir = Path(current_dir).parent
-            full_file_path = root_dir / file_path.lstrip('/')
-            full_destination = root_dir / destination.lstrip('/')
+            file_path, full_file_path = _resolve_allowed_path(file_path, "文件")
+            destination, full_destination = _resolve_allowed_path(destination, "位置")
+            if full_file_path is None or full_destination is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许在受控目录内解压文件'
+                })
 
             logger.debug(f"用户 {username} 请求解压文件: {file_path} -> {destination}")
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_file_path, root_dir, "文件")
-            if error:
-                return JSONResponse(status_code=403, content=error)
-
-            error = validate_path_safety(full_destination, root_dir, "位置")
-            if error:
-                return JSONResponse(status_code=403, content=error)
 
             # 确保目标目录存在
             os.makedirs(full_destination, exist_ok=True)
@@ -906,17 +943,12 @@ def register_files_routes(app, current_dir):
                 })
 
             # 处理相对路径
-            if not path.startswith('/'):
-                path = '/' + path
-
-            # 获取完整路径 - 从项目根目录开始
-            root_dir = Path(current_dir).parent
-            full_path = root_dir / path.lstrip('/')
-
-            # 安全检查：确保路径在项目目录内
-            error = validate_path_safety(full_path, root_dir, "位置")
-            if error:
-                return JSONResponse(status_code=403, content=error)
+            path, full_path = _resolve_allowed_path(path, "位置")
+            if full_path is None:
+                return JSONResponse(status_code=403, content={
+                    'success': False,
+                    'message': '仅允许上传到受控目录'
+                })
 
             # 确保目录存在
             os.makedirs(full_path, exist_ok=True)

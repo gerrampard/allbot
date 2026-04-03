@@ -1,7 +1,8 @@
 """
-页面路由模块
-
-职责：处理所有返回 HTML 页面的路由
+@input: FastAPI app、模板引擎、认证依赖、版本与系统状态函数
+@output: 管理后台 HTML 页面路由（首页、系统页、插件页等）
+@position: admin 页面入口层，负责将受保护模板页面映射到统一布局
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 from fastapi import Request, APIRouter, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -278,7 +279,6 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         version_info = get_version_info()
         context = build_page_context(request, "settings", version_info)
         return templates.TemplateResponse("settings.html", context)
-
 
     # 适配器管理页面
     @app.get("/adapters", response_class=HTMLResponse, tags=["页面"])

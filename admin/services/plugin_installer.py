@@ -1,7 +1,8 @@
 """
-插件安装服务模块
-
-职责：统一处理插件的下载、安装、更新逻辑
+@input: GitHub 仓库 URL、插件名、ZIP 内容、可选 requirements.txt
+@output: 受限插件安装/卸载结果，含仓库校验、ZIP 安全检查与可选依赖安装
+@position: 管理后台插件供应链入口，负责将远程插件安装收敛到受控流程
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import os
 import tempfile
@@ -10,8 +11,10 @@ import zipfile
 import io
 import subprocess
 import sys
+import stat
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse
 from loguru import logger
 import requests
 
@@ -24,8 +27,7 @@ class PluginInstaller:
 
     # 常量定义
     DOWNLOAD_TIMEOUT = 30
-    GITHUB_PREFIX = "https://github.com/"
-    GITHUB_PREFIX_LEN = 19
+    SAFE_NAME_RE = r"^[A-Za-z0-9_.-]+$"
 
     def __init__(self, plugins_dir: str = "plugins"):
         """
@@ -36,6 +38,16 @@ class PluginInstaller:
         """
         self.plugins_dir = plugins_dir
 
+    def _validate_plugin_name(self, plugin_name: str) -> str:
+        import re
+
+        safe_name = str(plugin_name or "").strip()
+        if not safe_name or not re.fullmatch(self.SAFE_NAME_RE, safe_name):
+            raise ValueError("插件名称只允许字母、数字、点、下划线和中划线")
+        if safe_name in {".", ".."}:
+            raise ValueError("非法插件名称")
+        return safe_name
+
     def _normalize_github_url(self, github_url: str) -> str:
         """
         标准化 GitHub URL
@@ -44,17 +56,31 @@ class PluginInstaller:
             github_url: 原始 GitHub URL
 
         Returns:
-            标准化后的 URL（移除 .git 后缀和 https://github.com/ 前缀）
+            标准化后的 URL（owner/repo）
         """
-        # 移除 .git 后缀
-        if github_url.endswith('.git'):
-            github_url = github_url[:-4]
+        parsed = urlparse(str(github_url or "").strip())
+        if parsed.scheme != "https" or parsed.netloc != "github.com":
+            raise ValueError("仅支持 https://github.com/<owner>/<repo> 格式的仓库地址")
 
-        # 移除 https://github.com/ 前缀
-        if github_url.startswith(self.GITHUB_PREFIX):
-            github_url = github_url[self.GITHUB_PREFIX_LEN:]
+        path = parsed.path.rstrip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        parts = [part for part in path.split("/") if part]
+        if len(parts) != 2:
+            raise ValueError("GitHub 仓库地址必须是 https://github.com/<owner>/<repo>")
+        return "/".join(parts)
 
-        return github_url
+    def _validate_zip_entry(self, target_root: Path, member: zipfile.ZipInfo) -> None:
+        member_name = member.filename.replace("\\", "/")
+        if member_name.startswith("/") or ".." in Path(member_name).parts:
+            raise ValueError(f"ZIP 包含不安全路径: {member.filename}")
+
+        mode = member.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"ZIP 包含符号链接，已拒绝: {member.filename}")
+
+        destination = (target_root / member_name).resolve(strict=False)
+        destination.relative_to(target_root.resolve(strict=False))
 
     def _download_from_github(self, github_url: str) -> bytes:
         """
@@ -109,6 +135,9 @@ class PluginInstaller:
         logger.info(f"解压 ZIP 文件到: {temp_dir}")
 
         z = zipfile.ZipFile(io.BytesIO(zip_content))
+        target_root = Path(temp_dir)
+        for member in z.infolist():
+            self._validate_zip_entry(target_root, member)
         z.extractall(temp_dir)
 
         # ZIP 文件解压后通常会有一个包含所有文件的顶级目录
@@ -222,6 +251,7 @@ class PluginInstaller:
             安装结果字典 {"success": bool, "message": str, "error": str}
         """
         temp_dir = None
+        plugin_name = self._validate_plugin_name(plugin_name)
         plugin_dir = os.path.join(self.plugins_dir, plugin_name)
         config_backup = None
 

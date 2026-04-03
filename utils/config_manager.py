@@ -58,9 +58,12 @@ class AdminConfig:
     host: str = "0.0.0.0"
     port: int = 9090
     username: str = "admin"
-    password: str = "admin123"
+    password: str = "change_me"
     debug: bool = False
     log_level: str = "INFO"
+    secret_key: str = "change_me_to_a_random_secret"
+    session_cookie_secure: bool = False
+    cors_origins: List[str] = field(default_factory=lambda: ["http://127.0.0.1", "http://localhost"])
 
 
 @dataclass
@@ -290,6 +293,20 @@ class ConfigManager:
         """创建配置对象"""
         config = AppConfig()
 
+        def get_with_legacy_fallback(
+            section_config: Dict[str, Any],
+            section_key: str,
+            default: Any,
+            *legacy_top_level_keys: str,
+        ) -> Any:
+            """优先读取分组配置，其次兼容旧版顶层写法。"""
+            if section_key in section_config:
+                return section_config[section_key]
+            for legacy_key in legacy_top_level_keys:
+                if legacy_key in self._raw_config:
+                    return self._raw_config[legacy_key]
+            return default
+
         # 数据库配置
         if "database" in self._raw_config:
             db_config = self._raw_config["database"]
@@ -313,37 +330,84 @@ class ConfigManager:
                 host=api_config.get("host", config.wechat_api.host),
                 port=api_config.get("port", config.wechat_api.port),
                 mode=api_config.get("mode", config.wechat_api.mode),
-                enable_websocket=api_config.get(
-                    "enable-websocket", config.wechat_api.enable_websocket
+                enable_websocket=get_with_legacy_fallback(
+                    api_config,
+                    "enable-websocket",
+                    config.wechat_api.enable_websocket,
+                    "enable-websocket",
                 ),
-                redis_host=api_config.get("redis-host", config.wechat_api.redis_host),
-                redis_port=api_config.get("redis-port", config.wechat_api.redis_port),
-                redis_password=api_config.get(
-                    "redis-password", config.wechat_api.redis_password
+                redis_host=get_with_legacy_fallback(
+                    api_config,
+                    "redis-host",
+                    config.wechat_api.redis_host,
+                    "redis-host",
                 ),
-                redis_db=api_config.get("redis-db", config.wechat_api.redis_db),
-                ws_url=api_config.get("ws-url", config.wechat_api.ws_url),
+                redis_port=get_with_legacy_fallback(
+                    api_config,
+                    "redis-port",
+                    config.wechat_api.redis_port,
+                    "redis-port",
+                ),
+                redis_password=get_with_legacy_fallback(
+                    api_config,
+                    "redis-password",
+                    config.wechat_api.redis_password,
+                    "redis-password",
+                ),
+                redis_db=get_with_legacy_fallback(
+                    api_config,
+                    "redis-db",
+                    config.wechat_api.redis_db,
+                    "redis-db",
+                ),
+                ws_url=get_with_legacy_fallback(
+                    api_config,
+                    "ws-url",
+                    config.wechat_api.ws_url,
+                    "ws-url",
+                ),
                 admin_key=api_config.get("admin-key", config.wechat_api.admin_key),
-                login_qrcode_proxy=api_config.get(
-                    "login-qrcode-proxy", config.wechat_api.login_qrcode_proxy
+                login_qrcode_proxy=get_with_legacy_fallback(
+                    api_config,
+                    "login-qrcode-proxy",
+                    config.wechat_api.login_qrcode_proxy,
+                    "login-qrcode-proxy",
                 ),
-                enable_rabbitmq=api_config.get(
-                    "enable-rabbitmq", config.wechat_api.enable_rabbitmq
+                enable_rabbitmq=get_with_legacy_fallback(
+                    api_config,
+                    "enable-rabbitmq",
+                    config.wechat_api.enable_rabbitmq,
+                    "enable-rabbitmq",
                 ),
-                rabbitmq_host=api_config.get(
-                    "rabbitmq-host", config.wechat_api.rabbitmq_host
+                rabbitmq_host=get_with_legacy_fallback(
+                    api_config,
+                    "rabbitmq-host",
+                    config.wechat_api.rabbitmq_host,
+                    "rabbitmq-host",
                 ),
-                rabbitmq_port=api_config.get(
-                    "rabbitmq-port", config.wechat_api.rabbitmq_port
+                rabbitmq_port=get_with_legacy_fallback(
+                    api_config,
+                    "rabbitmq-port",
+                    config.wechat_api.rabbitmq_port,
+                    "rabbitmq-port",
                 ),
-                rabbitmq_user=api_config.get(
-                    "rabbitmq-user", config.wechat_api.rabbitmq_user
+                rabbitmq_user=get_with_legacy_fallback(
+                    api_config,
+                    "rabbitmq-user",
+                    config.wechat_api.rabbitmq_user,
+                    "rabbitmq-user",
                 ),
-                rabbitmq_password=api_config.get(
-                    "rabbitmq-password", config.wechat_api.rabbitmq_password
+                rabbitmq_password=get_with_legacy_fallback(
+                    api_config,
+                    "rabbitmq-password",
+                    config.wechat_api.rabbitmq_password,
+                    "rabbitmq-password",
                 ),
-                rabbitmq_queue=api_config.get(
-                    "rabbitmq-queue", config.wechat_api.rabbitmq_queue
+                rabbitmq_queue=get_with_legacy_fallback(
+                    api_config,
+                    "rabbitmq-queue",
+                    config.wechat_api.rabbitmq_queue,
+                    "rabbitmq-queue",
                 ),
             )
 
@@ -358,6 +422,9 @@ class ConfigManager:
                 password=admin_config.get("password", config.admin.password),
                 debug=admin_config.get("debug", config.admin.debug),
                 log_level=admin_config.get("log_level", config.admin.log_level),
+                secret_key=admin_config.get("secret-key", admin_config.get("secret_key", config.admin.secret_key)),
+                session_cookie_secure=admin_config.get("session-cookie-secure", admin_config.get("session_cookie_secure", config.admin.session_cookie_secure)),
+                cors_origins=admin_config.get("cors-origins", admin_config.get("cors_origins", config.admin.cors_origins)),
             )
 
         # 协议配置

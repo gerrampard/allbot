@@ -1,3 +1,9 @@
+"""
+@input: Web 适配器、认证检查函数、上传媒体临时目录、WebSocket 连接
+@output: `/api/webchat/*` HTTP/WebSocket 接口与单会话消息缓存
+@position: 管理后台 Web 对话桥接层，负责浏览器侧会话收发与鉴权
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
 import base64
 import hashlib
 import mimetypes
@@ -176,6 +182,19 @@ async def _require_auth(request: Request) -> Optional[str]:
     username = await _check_auth(request)
     if not username:
         raise HTTPException(status_code=401, detail="未登录或登录已过期")
+    return username
+
+
+async def _require_websocket_auth(websocket: WebSocket) -> Optional[str]:
+    if _check_auth is None:
+        return None
+    from starlette.requests import Request as StarletteRequest
+
+    request = StarletteRequest(websocket.scope)
+    username = await _check_auth(request)
+    if not username:
+        await websocket.close(code=4401, reason="未登录或登录已过期")
+        return None
     return username
 
 
@@ -680,9 +699,12 @@ async def _consume_replies_loop():
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 端点 - 实时推送消息"""
+    username = await _require_websocket_auth(websocket)
+    if not username:
+        return
     await websocket.accept()
     _websocket_connections.append(websocket)
-    logger.info(f"新的 WebSocket 连接，当前连接数: {len(_websocket_connections)}")
+    logger.info(f"新的 WebSocket 连接，用户={username}，当前连接数: {len(_websocket_connections)}")
 
     try:
         # 发送欢迎消息

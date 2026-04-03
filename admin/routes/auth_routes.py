@@ -1,7 +1,8 @@
 """
-认证相关路由模块
-
-职责：处理用户登录、登出等认证操作
+@input: FastAPI app、管理后台认证配置、itsdangerous 会话签名器
+@output: 登录/登出/认证状态 API，带安全 Cookie 设置
+@position: 管理后台认证入口，负责会话签发与登录状态检测
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import time
 from fastapi import Request, Response
@@ -48,7 +49,8 @@ def register_auth_routes(app, config):
                     max_age=30 * 24 * 60 * 60 if remember else None,
                     path="/",
                     httponly=True,
-                    samesite="lax"
+                    samesite="lax",
+                    secure=bool(config.get("session_cookie_secure", False)),
                 )
 
                 logger.debug(f"用户 {username} 登录成功，有效期：{'30天' if remember else '浏览器会话'}")

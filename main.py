@@ -52,7 +52,7 @@ def start_admin_server(config):
         admin_host = admin_config.get("host", "0.0.0.0")
         admin_port = admin_config.get("port", 9090)
         admin_username = admin_config.get("username", "admin")
-        admin_password = admin_config.get("password", "admin123")
+        admin_password = admin_config.get("password", "change_me")
         admin_debug = admin_config.get("debug", False)
 
         # 提前启动管理后台服务

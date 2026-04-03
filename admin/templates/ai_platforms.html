@@ -1,3 +1,9 @@
+<!--
+@input: base.html 布局、AI 平台插件配置文件接口、文件读写与初始化 API
+@output: AI 平台管理页面与配置编辑交互
+@position: 管理后台 AI 平台配置页，负责展示平台状态并编辑插件配置
+@auto-doc: Update header and folder INDEX.md when this file changes
+-->
 {% extends "base.html" %}
 
 {% block page_title %}AI平台管理{% endblock %}
@@ -629,8 +635,24 @@
 
                 if (data.success && data.config_file) {
                     // 获取文件内容
-                    const contentResponse = await fetch(`/api/files/read?path=${encodeURIComponent(data.config_file)}`);
-                    const contentData = await contentResponse.json();
+                    let contentResponse = await fetch(`/api/files/read?path=${encodeURIComponent(data.config_file)}`);
+                    let contentData = await contentResponse.json();
+
+                    if (!contentData.success && contentResponse.status === 404) {
+                        const initResponse = await fetch('/api/files/init_plugin_config', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ path: data.config_file })
+                        });
+                        const initData = await initResponse.json();
+                        if (!initData.success) {
+                            throw new Error(initData.message || initData.error || '无法初始化配置文件');
+                        }
+                        contentResponse = await fetch(`/api/files/read?path=${encodeURIComponent(data.config_file)}`);
+                        contentData = await contentResponse.json();
+                    }
 
                     if (contentData.success) {
                         // 创建文本编辑器

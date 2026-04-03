@@ -82,6 +82,7 @@ class YourPlugin(PluginBase):
 ### 4.1 869 客户端专属能力（插件可直接调用）
 
 当 `bot.protocol_version == "869"` 时，插件拿到的 `bot` 实际为 `Client869`，可直接调用 869 专属方法；非 869 协议下这些方法会抛 `NotImplementedError`（请先判定协议或 `hasattr`）。
+这些能力不再通过管理后台 `/api/869/*` 暴露，统一改为插件内部直接调用。
 
 **协议判定示例：**
 

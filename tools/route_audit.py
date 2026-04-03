@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """
+@input: admin/routes/registry.py、admin/templates、admin/static 中的 `/api/*` 引用
+@output: 路由重复项与前后端契约缺失项的静态审计结果
+@position: 管理后台契约自检工具，负责在不启动应用的前提下校验 API 接线完整性
+@auto-doc: Update header and folder INDEX.md when this file changes
+
 路由契约自检工具（静态分析）
 
 目标：
@@ -200,7 +205,7 @@ def _extract_routes(files: Sequence[Path]) -> Tuple[List[Tuple[str, str, Path, i
 
 
 JS_TEMPLATE_RE = re.compile(r"\$\{[^}]+\}")
-API_REF_RE = re.compile(r"/api/[^\s\"'`<>]+")
+API_REF_RE = re.compile(r"/api/[^\s\"'`<>，。、]+")
 
 
 def _extract_api_refs(dirs: Sequence[Path]) -> Dict[str, Set[Path]]:

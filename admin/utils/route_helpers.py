@@ -1,13 +1,15 @@
 """
-路由辅助函数
-
-提供路由处理中常用的辅助功能
+@input: FastAPI Request、路径白名单根目录、版本与 bot 状态访问函数
+@output: 页面上下文构建、分页解析与安全路径校验工具
+@position: admin 路由层通用辅助模块，负责页面上下文复用与文件访问边界控制
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 from typing import Dict, Any, Optional
 from fastapi import Request
 from loguru import logger
 import sys
 import os
+from pathlib import Path
 
 # 添加父目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -155,8 +157,12 @@ def validate_path_safety(target_path: str, root_dir: str, path_description: str 
         if error:
             return JSONResponse(status_code=403, content=error)
     """
-    if not os.path.abspath(target_path).startswith(os.path.abspath(root_dir)):
-        logger.warning(f"尝试访问不安全的路径: {target_path}")
+    target = Path(target_path).resolve(strict=False)
+    root = Path(root_dir).resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        logger.warning(f"尝试访问不安全的路径: {target}")
         return {
             'success': False,
             'message': f'无法访问项目目录外的{path_description}'

@@ -1,0 +1,11 @@
+<!-- AUTO-DOC: Update me when files in this folder change -->
+
+# services
+
+管理后台服务层：封装高风险后台能力的具体执行逻辑，避免路由直接承载安装与供应链细节。
+
+## Files
+
+| File | Role | Function |
+|------|------|----------|
+| plugin_installer.py | Service | 受控插件安装/卸载服务（GitHub URL 校验、ZIP 安全检查、可选依赖安装） |

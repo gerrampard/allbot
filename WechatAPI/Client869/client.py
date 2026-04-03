@@ -1,7 +1,7 @@
 """
 @input: aiohttp/http 接口, pysilk 语音解码; bot_core 与插件层的调用契约
-@output: Client869 全接口动态调用能力与 bot_core 兼容方法
-@position: 869 协议专用客户端，隔离新协议实现，最小侵入接入现有框架（含群信息/撤回等兼容兜底）
+@output: Client869 全接口动态调用能力、显式 auth 探测/唤醒/拉码 helper、30000 类型 AuthKey 生成与 bot_core 兼容方法
+@position: 869 协议专用客户端，隔离新协议实现，并向启动链路/二维码辅助接口提供共享登录判定能力
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
 
@@ -44,6 +44,7 @@ KEY_TICKET_CANDIDATES = ("Ticket", "ticket")
 
 KEY_LOGIN_STATE_CANDIDATES = ("loginState", "LoginState")
 KEY_LOGIN_ERRMSG_CANDIDATES = ("loginErrMsg", "LoginErrMsg", "errMsg", "ErrMsg", "message", "Message", "Text", "text")
+KEY_EXPIRY_TIME_CANDIDATES = ("expiryTime", "ExpiryTime", "expireTime", "ExpireTime")
 
 KEY_PROFILE_WXID_CANDIDATES = ("UserName", "userName", "Wxid", "wxid")
 KEY_PROFILE_NICKNAME_CANDIDATES = ("NickName", "nickName", "nickname")
@@ -56,6 +57,22 @@ KEY_SEND_NEW_MSG_ID_CANDIDATES = ("NewMsgId", "newMsgId", "new_msg_id")
 
 DEFAULT_VIDEO_THUMB_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAPAAAACgCAIAAAC9uXYyAAABxklEQVR4nO3SQQ3AIADAwDFNiMUbZjBBQtLcKeijY679QcX/OgBuMjQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUg41RwLn0Myb+wAAAABJRU5ErkJggg=="
+)
+
+INVALID_AUTH_TEXT_MARKERS = (
+    "该链接不存在",
+    "该 key 无效",
+    "该key无效",
+    "链接不存在",
+    "key 无效",
+    "key无效",
+)
+
+ONLINE_LOGIN_TEXT_MARKERS = (
+    "在线状态良好",
+    "无需唤醒",
+    "账号已登录",
+    "已登录",
 )
 
 
@@ -293,31 +310,37 @@ class Client869:
             return self.admin_key or ""
         return self._resolve_active_key()
 
-    async def ensure_auth_key(self) -> str:
-        if self.auth_key:
+    async def ensure_auth_key(self, exclude_keys: Optional[Iterable[str]] = None) -> str:
+        excluded = {str(item or "").strip() for item in (exclude_keys or []) if str(item or "").strip()}
+
+        if self.auth_key and self.auth_key not in excluded:
             return self.auth_key
         if not self.admin_key:
             raise RuntimeError("缺少 admin_key，无法生成 AuthKey")
 
         if isinstance(self.auth_keys, list):
-            self.auth_keys = [str(x).strip() for x in self.auth_keys if str(x).strip()]
+            self.auth_keys = [
+                str(x).strip()
+                for x in self.auth_keys
+                if str(x).strip() and str(x).strip() not in excluded
+            ]
         else:
             self.auth_keys = []
+        self.auth_key = ""
 
         if self.auth_keys:
             self.auth_key = self.auth_keys[0]
             return self.auth_key
 
-        active_license_keys = await self.call_path("/admin/GetActiveLicenseKeys", method="GET", key=self.admin_key)
-        for value in _extract_auth_keys(active_license_keys):
-            if value not in self.auth_keys:
+        generated = await self.call_path(
+            "/admin/GenAuthKey3",
+            method="POST",
+            key=self.admin_key,
+            body={"Type": 30000, "Count": 1},
+        )
+        for value in _extract_auth_keys(generated):
+            if value not in excluded and value not in self.auth_keys:
                 self.auth_keys.append(value)
-
-        if not self.auth_keys:
-            generated = await self.call_path("/admin/GenAuthKey2", method="GET", key=self.admin_key)
-            for value in _extract_auth_keys(generated):
-                if value not in self.auth_keys:
-                    self.auth_keys.append(value)
 
         if self.auth_keys:
             self.auth_key = self.auth_keys[0]
@@ -406,6 +429,7 @@ class Client869:
         params: Optional[Dict[str, Any]] = None,
         key: Optional[str] = None,
         timeout: int = 30,
+        raise_for_api_error: bool = True,
     ) -> Any:
         request_method = method.upper().strip()
         request_path = self._coerce_path(path)
@@ -441,21 +465,22 @@ class Client869:
 
         if isinstance(payload, dict):
             self._log_response_preview(request_method, request_path, payload)
-            code = payload.get("Code")
-            if code not in (None, 0, 200):
-                raise RuntimeError(
-                    payload.get("Text")
-                    or payload.get("Message")
-                    or payload.get("message")
-                    or "869 接口请求失败"
-                )
-            if code is None and payload.get("Success") is False:
-                raise RuntimeError(
-                    payload.get("Text")
-                    or payload.get("Message")
-                    or payload.get("message")
-                    or "869 接口请求失败"
-                )
+            if raise_for_api_error:
+                code = payload.get("Code")
+                if code not in (None, 0, 200):
+                    raise RuntimeError(
+                        payload.get("Text")
+                        or payload.get("Message")
+                        or payload.get("message")
+                        or "869 接口请求失败"
+                    )
+                if code is None and payload.get("Success") is False:
+                    raise RuntimeError(
+                        payload.get("Text")
+                        or payload.get("Message")
+                        or payload.get("message")
+                        or "869 接口请求失败"
+                    )
         elif self._is_send_related_path(request_path):
             text_preview = str(payload).strip().replace("\n", " ")
             logger.warning(
@@ -598,6 +623,42 @@ class Client869:
         if key and not self.token_key:
             self.token_key = key
 
+    def set_active_auth_key(self, auth_key: str, *, promote: bool = True) -> str:
+        value = str(auth_key or "").strip()
+        if not value:
+            return ""
+
+        existing = self.auth_keys if isinstance(self.auth_keys, list) else []
+        ordered = [value, *existing] if promote else [*existing, value]
+        normalized: list[str] = []
+        seen = set()
+        for candidate in ordered:
+            text = str(candidate or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+
+        self.auth_keys = normalized
+        self.auth_key = value
+        return value
+
+    def remove_auth_keys(self, auth_keys: Iterable[str]) -> list[str]:
+        removed = {str(item or "").strip() for item in auth_keys if str(item or "").strip()}
+        existing = self.auth_keys if isinstance(self.auth_keys, list) else []
+        self.auth_keys = [str(item).strip() for item in existing if str(item).strip() and str(item).strip() not in removed]
+        if str(self.auth_key or "").strip() in removed:
+            self.auth_key = self.auth_keys[0] if self.auth_keys else ""
+        return list(self.auth_keys)
+
+    def clear_login_session_cache(self) -> None:
+        self.token_key = ""
+        self.poll_key = ""
+        self.display_uuid = ""
+        self.login_tx_id = ""
+        self.data62 = ""
+        self.ticket = ""
+
     def _append_key_to_ws_url(self, ws_url: str, key: str) -> str:
         parsed = urlparse(ws_url)
         query = parse_qs(parsed.query)
@@ -614,6 +675,362 @@ class Client869:
         except Exception:
             return False
 
+    @staticmethod
+    def _extract_login_response_text(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return str(payload or "").strip()
+
+        parts = [
+            _extract_text(payload.get("Text"), "").strip(),
+            _extract_text(payload.get("Message"), "").strip(),
+            _extract_text(payload.get("message"), "").strip(),
+        ]
+        data = payload.get("Data") if isinstance(payload.get("Data"), dict) else {}
+        if data:
+            for key in KEY_LOGIN_ERRMSG_CANDIDATES:
+                value = _extract_text(data.get(key), "").strip()
+                if value:
+                    parts.append(value)
+
+        return " ".join(part for part in parts if part).strip()
+
+    @classmethod
+    def is_invalid_auth_response(cls, payload: Any) -> bool:
+        text = cls._extract_login_response_text(payload)
+        if not text:
+            return False
+        lowered = text.lower()
+        return any(marker in text or marker in lowered for marker in INVALID_AUTH_TEXT_MARKERS)
+
+    @classmethod
+    def _has_online_login_hint(cls, payload: Any) -> bool:
+        text = cls._extract_login_response_text(payload)
+        if not text:
+            return False
+        lowered = text.lower()
+        return any(marker in text or marker in lowered for marker in ONLINE_LOGIN_TEXT_MARKERS) or "online" in lowered
+
+    def _summarize_login_status(
+        self,
+        payload: Any,
+        *,
+        request_key: str,
+        expected_wxid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        data = payload.get("Data") if isinstance(payload, dict) and isinstance(payload.get("Data"), dict) else {}
+        text = self._extract_login_response_text(payload)
+        code = _safe_int(payload.get("Code") if isinstance(payload, dict) else 0, 0)
+        wxid = _extract_text(_pick_first(data, KEY_WXID_CANDIDATES, ""), "").strip()
+        login_state = _safe_int(_pick_first(data, KEY_LOGIN_STATE_CANDIDATES, 0), 0)
+        raw_status = _pick_first(data, KEY_STATUS_CANDIDATES, "")
+        status_text = str(raw_status or "").strip().lower()
+        login_flag = _pick_first(data, KEY_LOGIN_BOOL_CANDIDATES, False)
+        expiry_time = _extract_text(_pick_first(data, KEY_EXPIRY_TIME_CANDIDATES, ""), "").strip()
+
+        invalid = self.is_invalid_auth_response(payload)
+        online = False
+        if not invalid:
+            if login_state in {1, 2, 200, 201}:
+                online = True
+            elif isinstance(login_flag, (int, float)) and int(login_flag) in {1, 2, 200, 201}:
+                online = True
+            elif status_text in {"online", "loggedin", "logged_in"}:
+                online = True
+            elif bool(login_flag) or bool(wxid):
+                online = True
+            elif self._has_online_login_hint(payload):
+                online = True
+
+        wxid_mismatch = bool(expected_wxid and wxid and str(expected_wxid).strip() != wxid)
+        if wxid_mismatch:
+            online = False
+
+        return {
+            "key": str(request_key or "").strip(),
+            "code": code,
+            "text": text,
+            "payload": payload if isinstance(payload, dict) else {},
+            "data": data,
+            "wxid": wxid,
+            "expiry_time": expiry_time,
+            "login_state": login_state,
+            "invalid": invalid,
+            "valid": bool(request_key) and not invalid,
+            "online": online,
+            "wxid_mismatch": wxid_mismatch,
+        }
+
+    def _apply_login_material_from_payload(
+        self,
+        payload: Any,
+        *,
+        auth_key: str = "",
+        device_name: str = "",
+        device_id: str = "",
+    ) -> Dict[str, Any]:
+        top = payload if isinstance(payload, dict) else {}
+        data = top.get("Data") if isinstance(top.get("Data"), dict) else {}
+
+        auth_key_value = _extract_text(
+            _pick_first(data, KEY_AUTH_KEY_CANDIDATES, "") or _pick_first(top, KEY_AUTH_KEY_CANDIDATES, ""),
+            "",
+        ).strip() or str(auth_key or "").strip()
+        if auth_key_value:
+            self.set_active_auth_key(auth_key_value)
+
+        token_key = _extract_text(
+            _pick_first(data, KEY_TOKEN_CANDIDATES, "") or _pick_first(top, KEY_TOKEN_CANDIDATES, ""),
+            "",
+        ).strip()
+        poll_key = _extract_text(
+            _pick_first(data, KEY_POLL_CANDIDATES, "") or _pick_first(top, KEY_POLL_CANDIDATES, ""),
+            "",
+        ).strip()
+        display_uuid = _extract_text(
+            _pick_first(data, KEY_DISPLAY_UUID_CANDIDATES, "") or _pick_first(top, KEY_DISPLAY_UUID_CANDIDATES, ""),
+            "",
+        ).strip()
+        login_tx_id = _extract_text(
+            _pick_first(data, KEY_LOGIN_TX_ID_CANDIDATES, "") or _pick_first(top, KEY_LOGIN_TX_ID_CANDIDATES, ""),
+            "",
+        ).strip()
+        qr_url = _extract_text(
+            _pick_first(data, KEY_QR_URL_CANDIDATES, "") or _pick_first(top, KEY_QR_URL_CANDIDATES, ""),
+            "",
+        ).strip()
+        uuid = _extract_text(
+            _pick_first(data, KEY_UUID_CANDIDATES, "") or _pick_first(top, KEY_UUID_CANDIDATES, ""),
+            "",
+        ).strip() or _extract_uuid_from_qr_url(qr_url)
+        data62 = _extract_text(
+            _pick_first(top, KEY_DATA62_CANDIDATES, "") or _pick_first(data, KEY_DATA62_CANDIDATES, ""),
+            "",
+        ).strip()
+        ticket = _extract_text(
+            _pick_first(top, KEY_TICKET_CANDIDATES, "") or _pick_first(data, KEY_TICKET_CANDIDATES, ""),
+            "",
+        ).strip()
+        wxid = _extract_text(_pick_first(data, KEY_WXID_CANDIDATES, ""), "").strip()
+
+        if token_key:
+            self.token_key = token_key
+        if poll_key:
+            self.poll_key = poll_key
+        elif uuid and not self.poll_key:
+            self.poll_key = uuid
+        elif auth_key_value and not self.poll_key:
+            self.poll_key = auth_key_value
+
+        if display_uuid:
+            self.display_uuid = display_uuid
+        elif uuid:
+            self.display_uuid = uuid
+        if login_tx_id:
+            self.login_tx_id = login_tx_id
+        if data62:
+            self.data62 = data62
+        if ticket:
+            self.ticket = ticket
+        if wxid:
+            self.wxid = wxid
+        if device_id:
+            self.device_id = str(device_id)
+        if device_name:
+            requested_device = str(device_name).strip().lower()
+            self.device_type = "mac" if requested_device == "mac" else "ipad"
+        if qr_url:
+            self._sync_key_from_url(qr_url)
+
+        return {
+            "auth_key": auth_key_value,
+            "token_key": self.token_key,
+            "poll_key": self.poll_key,
+            "display_uuid": self.display_uuid,
+            "login_tx_id": self.login_tx_id,
+            "data62": self.data62,
+            "ticket": self.ticket,
+            "wxid": self.wxid,
+            "uuid": uuid,
+            "qrcode_url": qr_url,
+            "device_type": self.device_type,
+            "device_id": self.device_id,
+        }
+
+    async def probe_login_key(self, key: str, wxid: Optional[str] = None) -> Dict[str, Any]:
+        request_key = str(key or "").strip()
+        if not request_key:
+            return {
+                "key": "",
+                "code": 0,
+                "text": "缺少登录 key",
+                "payload": {},
+                "data": {},
+                "wxid": "",
+                "expiry_time": "",
+                "login_state": 0,
+                "invalid": False,
+                "valid": False,
+                "online": False,
+                "wxid_mismatch": False,
+                "error": "缺少登录 key",
+            }
+
+        try:
+            response = await self.request(
+                "/login/GetLoginStatus",
+                method="GET",
+                key=request_key,
+                raise_for_api_error=False,
+            )
+        except Exception as error:
+            return {
+                "key": request_key,
+                "code": 0,
+                "text": str(error),
+                "payload": {},
+                "data": {},
+                "wxid": "",
+                "expiry_time": "",
+                "login_state": 0,
+                "invalid": False,
+                "valid": False,
+                "online": False,
+                "wxid_mismatch": False,
+                "error": str(error),
+            }
+
+        summary = self._summarize_login_status(response, request_key=request_key, expected_wxid=wxid)
+        if summary["wxid"]:
+            self.wxid = summary["wxid"]
+        return summary
+
+    async def wake_up_with_auth(
+        self,
+        auth_key: str,
+        *,
+        device_name: str = "",
+        device_id: str = "",
+    ) -> Dict[str, Any]:
+        request_key = self.set_active_auth_key(auth_key)
+        if not request_key:
+            return {
+                "key": "",
+                "code": 0,
+                "text": "缺少 auth_key",
+                "payload": {},
+                "invalid": False,
+                "valid": False,
+                "online": False,
+                "error": "缺少 auth_key",
+            }
+
+        login_device = "mac" if str(device_name or self.device_type or "").strip().lower() == "mac" else "ipad"
+        payload = {"IpadOrmac": login_device, "Check": False}
+
+        try:
+            response = await self.request(
+                "/login/WakeUpLogin",
+                method="POST",
+                body=payload,
+                key=request_key,
+                raise_for_api_error=False,
+            )
+        except Exception as error:
+            return {
+                "key": request_key,
+                "code": 0,
+                "text": str(error),
+                "payload": {},
+                "invalid": False,
+                "valid": False,
+                "online": False,
+                "error": str(error),
+            }
+
+        state = self._apply_login_material_from_payload(
+            response,
+            auth_key=request_key,
+            device_name=login_device,
+            device_id=device_id,
+        )
+        summary = self._summarize_login_status(response, request_key=request_key)
+        summary.update(state)
+        return summary
+
+    async def get_qr_code_with_auth(
+        self,
+        auth_key: str,
+        *,
+        device_name: str,
+        device_id: str = "",
+        proxy: Any = None,
+        print_qr: bool = False,
+    ) -> Dict[str, Any]:
+        request_key = self.set_active_auth_key(auth_key)
+        if not request_key:
+            return {
+                "ok": False,
+                "key": "",
+                "code": 0,
+                "text": "缺少 auth_key",
+                "payload": {},
+                "invalid": False,
+                "valid": False,
+                "online": False,
+                "error": "缺少 auth_key",
+            }
+
+        proxy_value = _normalize_proxy_value(proxy) or _normalize_proxy_value(getattr(self, "login_qrcode_proxy", ""))
+        login_device = "mac" if str(device_name or "").strip().lower() == "mac" else "ipad"
+        payload = {"IpadOrmac": login_device, "Check": False}
+        if proxy_value:
+            payload["Proxy"] = proxy_value
+
+        try:
+            response = await self.request(
+                "/login/GetLoginQrCodeNewDirect",
+                method="POST",
+                body=payload,
+                key=request_key,
+                raise_for_api_error=False,
+            )
+        except Exception as error:
+            return {
+                "ok": False,
+                "key": request_key,
+                "code": 0,
+                "text": str(error),
+                "payload": {},
+                "invalid": False,
+                "valid": False,
+                "online": False,
+                "error": str(error),
+            }
+
+        state = self._apply_login_material_from_payload(
+            response,
+            auth_key=request_key,
+            device_name=login_device,
+            device_id=device_id,
+        )
+        summary = self._summarize_login_status(response, request_key=request_key)
+        qr_url = state.get("qrcode_url", "")
+        uuid = state.get("uuid", "")
+
+        if print_qr and qr_url:
+            logger.info("869 二维码链接: {}", qr_url)
+
+        summary.update(state)
+        summary.update(
+            {
+                "ok": bool(qr_url or uuid),
+                "qrcode_url": qr_url,
+                "uuid": uuid,
+                "login_mode": login_device,
+            }
+        )
+        return summary
+
     async def get_qr_code(
         self,
         device_name: str,
@@ -622,61 +1039,16 @@ class Client869:
         print_qr: bool = False,
     ) -> Tuple[str, str]:
         auth_key = await self.ensure_auth_key()
-        proxy_value = _normalize_proxy_value(proxy) or _normalize_proxy_value(getattr(self, "login_qrcode_proxy", ""))
-
-        requested_device = (device_name or "").strip().lower()
-        login_device = "mac" if requested_device == "mac" else "ipad"
-
-        payload = {"IpadOrmac": login_device, "Check": False}
-        if proxy_value:
-            payload["Proxy"] = proxy_value
-
-        response = await self.request(
-            "/login/GetLoginQrCodeNewDirect",
-            method="POST",
-            body=payload,
-            key=auth_key,
+        result = await self.get_qr_code_with_auth(
+            auth_key,
+            device_name=device_name,
+            device_id=device_id,
+            proxy=proxy,
+            print_qr=print_qr,
         )
-        data62 = _pick_first(response, KEY_DATA62_CANDIDATES, "")
-        if data62:
-            self.data62 = str(data62)
-        data = response.get("Data", {}) if isinstance(response, dict) else {}
-
-        token_key = _pick_first(data, KEY_TOKEN_CANDIDATES, "")
-        poll_key = _pick_first(data, KEY_POLL_CANDIDATES, "")
-        display_uuid = _pick_first(data, KEY_DISPLAY_UUID_CANDIDATES, "")
-        login_tx_id = _pick_first(data, KEY_LOGIN_TX_ID_CANDIDATES, "")
-
-        qr_url = _pick_first(data, KEY_QR_URL_CANDIDATES, "")
-        uuid = _pick_first(data, KEY_UUID_CANDIDATES, "") or _extract_uuid_from_qr_url(str(qr_url))
-        if not qr_url and uuid:
-            qr_url = f"http://weixin.qq.com/x/{uuid}"
-
-        auth_key_from_data = _pick_first(data, KEY_AUTH_KEY_CANDIDATES, "")
-        if auth_key_from_data:
-            self.auth_key = str(auth_key_from_data)
-
-        if token_key:
-            self.token_key = str(token_key)
-        self.poll_key = str(poll_key or self.poll_key or self.auth_key)
-        if display_uuid:
-            self.display_uuid = str(display_uuid)
-        elif uuid:
-            self.display_uuid = str(uuid)
-        if login_tx_id:
-            self.login_tx_id = str(login_tx_id)
-
-        self.device_type = device_name or self.device_type
-        if device_id:
-            self.device_id = device_id
-        self.device_type = login_device
-
-        self._sync_key_from_url(qr_url)
-
-        if print_qr and qr_url:
-            logger.info("869 二维码链接: {}", qr_url)
-
-        return str(uuid), str(qr_url)
+        if result.get("ok"):
+            return str(result.get("uuid", "")), str(result.get("qrcode_url", ""))
+        raise RuntimeError(str(result.get("text") or "获取 869 二维码失败"))
 
     async def check_login_uuid(self, uuid: str, device_id: str = "") -> Tuple[bool, Union[Dict[str, Any], int, str]]:
         check_key = self.token_key or self.poll_key or self.auth_key or uuid
@@ -754,38 +1126,10 @@ class Client869:
         if not key:
             return False
 
-        try:
-            response = await self.request("/login/GetLoginStatus", method="GET", key=key)
-        except Exception:
+        summary = await self.probe_login_key(key, wxid=wxid)
+        if summary.get("error"):
             return False
-
-        data = response.get("Data") if isinstance(response, dict) else None
-        if isinstance(data, dict):
-            remote_wxid = _pick_first(data, KEY_WXID_CANDIDATES, "")
-            status = _pick_first(data, KEY_LOGIN_BOOL_CANDIDATES, False)
-            login_state = _safe_int(_pick_first(data, KEY_LOGIN_STATE_CANDIDATES, 0), 0)
-            login_msg = _extract_text(_pick_first(data, KEY_LOGIN_ERRMSG_CANDIDATES, ""))
-            if remote_wxid:
-                self.wxid = str(remote_wxid)
-            if wxid and remote_wxid and str(wxid) != str(remote_wxid):
-                return False
-            if login_state in {1, 2, 200, 201}:
-                return True
-            if isinstance(status, (int, float)) and int(status) in {1, 2, 200, 201}:
-                return True
-            if bool(status) or bool(remote_wxid):
-                return True
-            if "在线" in login_msg or "online" in login_msg.lower():
-                return True
-            return False
-
-        if isinstance(data, bool):
-            return data
-
-        if isinstance(response, dict):
-            return bool(response.get("Success"))
-
-        return False
+        return bool(summary.get("online"))
 
     def _apply_profile(self, profile: Dict[str, Any]):
         user_info = profile.get("userInfo", {}) if isinstance(profile.get("userInfo"), dict) else {}
@@ -844,25 +1188,12 @@ class Client869:
             if not active_key:
                 return ""
 
-            device_type = str(getattr(self, "device_type", "") or "").strip().lower()
-            login_device = "mac" if device_type == "mac" else "ipad"
-
-            payload = {"IpadOrmac": login_device, "Check": False}
-            data = await self.request("/login/WakeUpLogin", method="POST", body=payload, key=active_key)
-
-            # 兼容 Data/顶层字段
-            src = data.get("Data") if isinstance(data, dict) else None
-            if not isinstance(src, dict):
-                src = data if isinstance(data, dict) else {}
-
-            token_key = _pick_first(src, KEY_TOKEN_CANDIDATES, "") or _pick_first(data, KEY_TOKEN_CANDIDATES, "")
-            poll_key = _pick_first(src, KEY_POLL_CANDIDATES, "") or _pick_first(data, KEY_POLL_CANDIDATES, "")
-            if token_key:
-                self.token_key = str(token_key)
-            if poll_key:
-                self.poll_key = str(poll_key)
-
-            candidate = _pick_first(src, ("Uuid", "uuid", "Url", "url"), "") or _pick_first(data, ("Uuid", "uuid", "Url", "url"), "")
+            result = await self.wake_up_with_auth(
+                active_key,
+                device_name=str(getattr(self, "device_type", "") or "").strip().lower(),
+                device_id=str(getattr(self, "device_id", "") or "").strip(),
+            )
+            candidate = result.get("uuid") or result.get("qrcode_url") or ""
             return str(candidate or "")
         except Exception as error:
             logger.debug("869 唤醒登录失败: {}", error)

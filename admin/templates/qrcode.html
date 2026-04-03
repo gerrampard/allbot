@@ -414,6 +414,7 @@
 {% block extra_js %}
 <script>
     let qrcodeUrl = '';
+    let loginChallenge = '';
     let currentQRCodeUuid = '';
     let currentLoginMode = '';
     let countdownTimer = null;
@@ -501,7 +502,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         auth_key: authKey,
-                        qrcode_proxy: proxy
+                        qrcode_proxy: proxy,
+                        login_challenge: loginChallenge
                     })
                 });
                 const data = await response.json();
@@ -556,7 +558,8 @@
                     body: JSON.stringify({
                         code: code,
                         data62: lastStatusData62 || '',
-                        ticket: lastStatusTicket || ''
+                        ticket: lastStatusTicket || '',
+                        login_challenge: loginChallenge
                     })
                 });
                 const data = await response.json();
@@ -585,7 +588,7 @@
                 const response = await fetch('/api/login/force_mac_qrcode', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
+                    body: JSON.stringify({ login_challenge: loginChallenge })
                 });
                 const data = await response.json();
                 if (data && data.success && data.data && data.data.status === 'online') {
@@ -661,6 +664,9 @@
                 const nextUrl = data.data.qrcode_url;
                 const nextUuid = data.data.uuid || '';
                 const nextMode = (data.data.login_mode || '').toString().toLowerCase();
+                if (data.data.login_challenge) {
+                    loginChallenge = data.data.login_challenge;
+                }
 
                 if (nextUuid) {
                     currentQRCodeUuid = nextUuid;
@@ -699,6 +705,9 @@
             const nextUrl = data.data.qrcode_url || '';
             const nextUuid = data.data.uuid || '';
             const nextMode = (data.data.login_mode || '').toString().toLowerCase();
+            if (data.data.login_challenge) {
+                loginChallenge = data.data.login_challenge;
+            }
 
             if (nextMode && nextMode !== currentLoginMode) {
                 currentLoginMode = nextMode;

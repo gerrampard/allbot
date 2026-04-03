@@ -1,3 +1,9 @@
+"""
+@input: Telegram Bot Token、反代/透明代理配置、Redis 队列配置、requests/filetype
+@output: TelegramAdapter 适配器与 TelegramBotClient HTTP 客户端
+@position: Telegram 平台桥接层，负责 Bot API 请求、轮询/Webhook 接收与回复队列转发
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
 import asyncio
 import base64
 import hashlib
@@ -63,14 +69,29 @@ class TelegramBotClient:
         return f"{base}{self.token}"
 
     def _build_base_url(self, proxy_host: str) -> str:
-        base = (proxy_host or "https://api.telegram.org").strip().rstrip("/")
+        base = (proxy_host or "https://api.telegram.org").strip()
         if base and not base.startswith(("http://", "https://")):
             base = f"https://{base}"
-        if base.endswith("/bot"):
-            return base
-        if "/bot" in base:
-            base = base.split("/bot", 1)[0]
-        return f"{base}/bot"
+
+        parsed = urlsplit(base)
+        scheme = parsed.scheme or "https"
+        netloc = parsed.netloc or parsed.path
+        path = parsed.path if parsed.netloc else ""
+
+        if not netloc:
+            netloc = "api.telegram.org"
+
+        normalized_path = path.rstrip("/")
+        if normalized_path == "/bot":
+            bot_path = "/bot"
+        elif normalized_path.startswith("/bot/"):
+            bot_path = "/bot"
+        elif normalized_path:
+            bot_path = normalized_path + "/bot"
+        else:
+            bot_path = "/bot"
+
+        return urlunsplit((scheme, netloc, bot_path, "", ""))
 
     @staticmethod
     def _build_file_root(api_root: str) -> str:

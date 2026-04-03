@@ -1139,6 +1139,7 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
             plugin_data = data.get('plugin_data', {})
             plugin_name = plugin_data.get('name')
             github_url = plugin_data.get('github_url')
+            install_dependencies = bool(data.get('install_dependencies', False))
 
             if not plugin_name or not github_url:
                 return {"success": False, "error": "缺少必要参数"}
@@ -1148,7 +1149,7 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
             result = installer.install_plugin(
                 plugin_name=plugin_name,
                 github_url=github_url,
-                install_dependencies=True
+                install_dependencies=install_dependencies
             )
 
             # 如果安装成功，尝试自动加载插件
@@ -1207,7 +1208,6 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
                                 json=plugin_data,
                                 headers=headers,
                                 timeout=10,
-                                ssl=False,
                                 allow_redirects=True,
                             ) as response:
                                 if response.status == 200:
@@ -1326,6 +1326,7 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
             data = await request.json()
             plugin_name = data.get('name')
             github_url = data.get('github_url')
+            install_dependencies = bool(data.get('install_dependencies', False))
 
             if not plugin_name or not github_url:
                 return {"success": False, "error": "缺少必要参数"}
@@ -1335,7 +1336,7 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
             result = installer.install_plugin(
                 plugin_name=plugin_name,
                 github_url=github_url,
-                install_dependencies=True
+                install_dependencies=install_dependencies
             )
 
             # 如果安装成功，尝试自动加载插件

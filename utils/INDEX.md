@@ -2,13 +2,13 @@
 
 # utils
 
-通用基础设施与业务工具集合。此次变更更新了协议配置与配置管理，支持 869 协议、`admin-key` 与登录二维码代理配置读取。
+通用基础设施与业务工具集合。此次变更更新了协议配置与配置管理，支持 869 协议、`admin-key`、登录二维码代理读取，以及 WechatAPI 传输字段的顶层旧写法兼容。
 
 ## Files
 
 | File | Role | Function |
 |------|------|----------|
-| config_manager.py | Config Core | TOML/环境变量加载与配置校验（新增 869/admin-key/login-qrcode-proxy） |
+| config_manager.py | Config Core | TOML/环境变量加载与配置校验（支持 869/admin-key/login-qrcode-proxy，并兼容 `redis-*`/`ws-url`/`rabbitmq-*` 顶层旧写法） |
 | framework_actions.py | Ops | 统一框架更新/重启入口（管理后台与 ManagePlugin 共用；更新时合并 `adapter/`、`plugins/` 并保留现有配置文件） |
 | protocol_config.py | Protocol Map | 协议版本与 API 前缀映射（新增 869） |
 | xybot/ | Domain | XYBot 业务域模块（联系人/路由/权限等，含 869 兼容联系人查询） |

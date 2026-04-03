@@ -1,3 +1,10 @@
+<!--
+@input: Telegram Bot Token、proxyHost/httpProxy、Redis 队列与 webhook 配置
+@output: Telegram 适配器使用说明、配置约束与排障提示
+@position: Telegram 适配器文档入口，说明 Bot API 访问方式与部署配置
+@auto-doc: Update header and folder INDEX.md when this file changes
+-->
+
 # Telegram 适配器
 
 [← 返回主文档](../../README.md) | [适配器总览](../CLAUDE.md)
@@ -128,6 +135,11 @@ text | image | voice | video | file | sticker | location
 - 确认格式正确（数字:字母数字组合）
 - 检查是否从 @BotFather 正确获取
 - 确认没有多余空格或换行
+
+**自建反代地址报 `Failed to parse`**
+- `proxyHost` 只能填基础域名或基础路径，例如 `https://tg.sxkiss.com`
+- 不要手动追加 `/getMe`、`/bot<token>` 或 token 本身
+- 包含本次修复后，`https://bot.xxx.com` 这类域名不会再被误裁剪成非法 URL
 
 **无法接收消息（Long Polling）**
 - 确认网络可访问 Telegram API

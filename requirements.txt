@@ -43,7 +43,6 @@ gTTS~=2.5.1                   # Dify 插件依赖（gtts）
 websockets>=10.0
 
 # 分布式异步队列
-redis>=4.2.0
+redis>=4.2.0,<6.0.0
 pytz>=2021.1
 aio_pika>=9.0.0
-ffmpeg #视频文件需要

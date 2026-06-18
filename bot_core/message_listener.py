@@ -99,14 +99,29 @@ def _parse_invalid_status_payload(error: Exception) -> Dict[str, Any]:
 
 
 async def message_consumer(xybot, redis, message_db):
+    logger.info("[Consumer] 消费者任务已启动，开始监听队列: {}", QUEUE_NAME)
+    try:
+        await redis.ping()
+        logger.info("[Consumer] Redis 连接健康检查通过")
+    except Exception as exc:
+        logger.error("[Consumer] Redis 连接健康检查失败: {}", exc)
+        raise
     while True:
-        _, msg_json = await redis.blpop(QUEUE_NAME)
-        message = json.loads(msg_json)
-        logger.info("消息已出队并开始处理，队列: {}，消息ID: {}", QUEUE_NAME, message.get("MsgId") or message.get("msgId"))
         try:
-            await xybot.process_message(message)
-        except Exception as error:
-            logger.error("消息处理异常: {}", error)
+            logger.debug("[Consumer] 等待消息，队列: {} ...", QUEUE_NAME)
+            _, msg_json = await redis.blpop(QUEUE_NAME)
+            message = json.loads(msg_json)
+            logger.info("消息已出队并开始处理，队列: {}，消息ID: {}", QUEUE_NAME, message.get("MsgId") or message.get("msgId"))
+            try:
+                await xybot.process_message(message)
+            except Exception as error:
+                logger.error("消息处理异常: {}", error)
+        except asyncio.CancelledError:
+            logger.info("[Consumer] 消费者任务收到取消信号，退出")
+            raise
+        except Exception as exc:
+            logger.error("[Consumer] 消费者循环异常: {}", exc)
+            await asyncio.sleep(1)
 
 
 async def listen_ws_messages(xybot, ws_url: str | Callable[[], str], redis, message_db):

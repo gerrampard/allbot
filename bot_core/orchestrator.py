@@ -59,6 +59,17 @@ async def bot_core():
                     logger.success("✅ 登录处理完成（后台任务）")
                 except Exception as error:  # pragma: no cover
                     logger.error("❌ 登录任务失败: {}", error)
+                    # 发送登录失败通知
+                    try:
+                        from utils.notification_service import get_notification_service
+                        notification_service = get_notification_service()
+                        if notification_service and notification_service.enabled and notification_service.token:
+                            wxid = getattr(bot, "wxid", "") or "system"
+                            asyncio.create_task(
+                                notification_service.send_error_notification(wxid, f"微信登录任务失败: {error}")
+                            )
+                    except Exception:
+                        pass
 
             login_task.add_done_callback(_log_login_task_done)
         else:

@@ -175,10 +175,7 @@ def register_notification_routes(app, templates):
             wxid = bot_status.get("wxid", "")
 
             if not wxid:
-                return JSONResponse(content={
-                    "success": False,
-                    "message": "无法获取当前微信 ID"
-                })
+                wxid = "web-admin"
 
             from utils.notification_service import get_notification_service
             notification_service = get_notification_service()
@@ -198,7 +195,7 @@ def register_notification_routes(app, templates):
             if not notification_service.token:
                 return JSONResponse(content={
                     "success": False,
-                    "message": "PushPlus Token 未设置"
+                    "message": "通知 API Key 未设置"
                 })
 
             success = await notification_service.send_test_notification(wxid)

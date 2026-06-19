@@ -445,7 +445,10 @@ class AutoRestartMonitor:
                                 notification_service.send_offline_notification(wxid)
                             )
                         else:
-                            logger.warning("无法获取当前微信ID，跳过发送离线通知")
+                            logger.warning("无法获取当前微信ID，使用 system 作为兜底发送离线通知")
+                            asyncio.create_task(
+                                notification_service.send_offline_notification("system")
+                            )
 
                     # 触发重启
                     await restart_system()
@@ -469,7 +472,13 @@ class AutoRestartMonitor:
                                 notification_service.send_offline_notification(wxid)
                             )
                         else:
-                            logger.warning("无法获取当前微信ID，跳过发送离线通知")
+                            logger.warning("无法获取当前微信ID，使用 system 作为兜底发送离线通知")
+                            asyncio.create_task(
+                                notification_service.send_error_notification(
+                                    "system",
+                                    f"机器人状态异常: {status}，无法获取微信ID",
+                                )
+                            )
 
                     # 触发重启
                     await restart_system()

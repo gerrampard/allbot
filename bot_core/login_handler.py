@@ -322,6 +322,18 @@ class WechatLoginHandler:
             },
         )
 
+        # 发送错误通知
+        try:
+            from utils.notification_service import get_notification_service
+            notification_service = get_notification_service()
+            if notification_service and notification_service.enabled and notification_service.token:
+                wxid = getattr(self.bot, "wxid", "") or "system"
+                import asyncio
+                asyncio.create_task(notification_service.send_error_notification(wxid, message))
+                logger.info("已触发 869 登录错误通知: {}", message)
+        except Exception as e:
+            logger.warning("发送 869 登录错误通知失败: {}", e)
+
     async def _safe_apply_profile_from_bot(self) -> None:
         try:
             await self._apply_profile_from_bot()
@@ -811,6 +823,21 @@ class WechatLoginHandler:
 
         if not twice:
             logger.error("二次登录失败，请检查微信是否在运行中，或重新启动机器人")
+            # 发送二次登录失败通知
+            try:
+                from utils.notification_service import get_notification_service
+                notification_service = get_notification_service()
+                if notification_service and notification_service.enabled and notification_service.token:
+                    notify_wxid = wxid or "system"
+                    asyncio.create_task(
+                        notification_service.send_error_notification(
+                            notify_wxid,
+                            f"微信二次登录失败，请检查微信是否在运行中（wxid: {wxid}）",
+                        )
+                    )
+                    logger.info("已触发二次登录失败通知")
+            except Exception as e:
+                logger.warning("发送二次登录失败通知出错: {}", e)
             logger.info("尝试唤醒登录...")
 
             try:

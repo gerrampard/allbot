@@ -121,18 +121,24 @@ class NotificationService:
             logger.warning(f"通知服务未启用或Token未设置，无法发送{type_name}通知")
             return False
 
-        # 构建PushPlus请求数据
-        url = "http://www.pushplus.plus/send"
-        data = {
-            "token": self.token,
-            "title": title,
-            "content": content,
-            "template": self.template,
-            "channel": self.channel,
+        # 构建xx-tui请求数据（API_KEY 通过 URL 路径传递）
+        url = f"https://www.xxtui.com/xxtui/{self.token}"
+        # xx-tui channel 名称映射
+        channel_map = {
+            "wechat": "WX_MP",
+            "sms": "SMS_VOICE",
+            "mail": "EMAIL",
+            "cp": "WX_QY_ROBOT",
+            "webhook": "CUSTOM_HTTP",
         }
+        xxtui_channel = channel_map.get(self.channel, self.channel or "WX_MP")
 
-        if self.topic:
-            data["topic"] = self.topic
+        data = {
+            "content": content,
+            "title": title,
+            "from": "allbot",
+            "channel": xxtui_channel,
+        }
 
         logger.info(f"准备发送{type_name}通知，渠道: {self.channel}")
 
@@ -141,7 +147,7 @@ class NotificationService:
                 async with session.post(url, json=data) as response:
                     result = await response.json()
 
-                    if result.get("code") == 200:
+                    if result.get("code") == 0:
                         logger.info(f"{type_name}通知发送成功")
                         self._add_history(type_name, True, title)
                         return True

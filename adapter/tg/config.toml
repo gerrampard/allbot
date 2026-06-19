@@ -30,6 +30,22 @@ downloadRetry = 3
 initRetry = 3
 initRetryInterval = 5
 
+# 多机器人配置（可选）。配置后会忽略上方 token，并为每个 bot 单独启动轮询线程。
+# name 会进入会话 ID，例如 telegram-support-123456 或 telegram-notify--100123456@chatroom。
+# [[telegram.bots]]
+# name = "support"
+# token = ""
+# polling = true
+# proxyHost = ""
+# httpProxy = ""
+#
+# [[telegram.bots]]
+# name = "notify"
+# token = ""
+# polling = true
+# proxyHost = ""
+# httpProxy = ""
+
 [telegram.webhook]
 # 启用 Webhook 时自动关闭长轮询
 enable = false

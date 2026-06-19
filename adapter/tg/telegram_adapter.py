@@ -1,7 +1,7 @@
 """
-@input: Telegram Bot Token、反代/透明代理配置、Redis 队列配置、requests/filetype
-@output: TelegramAdapter 适配器与 TelegramBotClient HTTP 客户端
-@position: Telegram 平台桥接层，负责 Bot API 请求、轮询/Webhook 接收与回复队列转发
+@input: 单个或多个 Telegram Bot Token、反代/透明代理配置、Redis 队列配置、requests/filetype
+@output: TelegramAdapter 适配器与多个 TelegramBotClient HTTP 客户端
+@position: Telegram 平台桥接层，负责多 Bot API 请求、轮询/Webhook 接收与回复队列转发
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
 import asyncio
@@ -260,6 +260,39 @@ class _TelegramWebhookHTTPServer(ThreadingHTTPServer):
         self.secret_token = secret_token
 
 
+class _BotState:
+    """单个 Telegram Bot 的运行状态"""
+
+    def __init__(
+        self,
+        name: str,
+        client: TelegramBotClient,
+        wxid: str,
+        nickname: str,
+        alias: str,
+        polling_enabled: bool,
+        webhook_enabled: bool,
+        polling_thread: Optional[threading.Thread] = None,
+    ):
+        self.name = name
+        self.client = client
+        self.wxid = wxid
+        self.nickname = nickname
+        self.alias = alias
+        self.polling_enabled = polling_enabled
+        self.webhook_enabled = webhook_enabled
+        self.polling_thread = polling_thread
+        self.recent_message_keys: set = set()
+        self.recent_messages: deque = deque()
+
+    def close(self):
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+
+
 class TelegramAdapter:
     """Telegram 适配器（支持反代），与 ReplyRouter 保持兼容"""
 
@@ -301,6 +334,8 @@ class TelegramAdapter:
         self.polling_enabled = base_polling and not self.webhook_enabled
 
         self.bot: Optional[TelegramBotClient] = None
+        self._bots: Dict[str, _BotState] = {}
+        self._is_multi_bot = False
         self.redis_conn: Optional[redis.Redis] = None
         self.redis_queue = self.main_config.get("WechatAPIServer", {}).get("redis-queue", "allbot")
         self.reply_queue = (
@@ -336,31 +371,116 @@ class TelegramAdapter:
             self._logger.warning("配置中 enable=false，跳过 Telegram 适配器初始化")
             return
 
-        token = self.telegram_config.get("token", "").strip()
-        if not token:
-            self._logger.error("未配置 Telegram token，无法启动适配器")
-            self.enabled = False
-            return
-        self.token = token
-
-        if not self._initialize_bot_with_retry():
-            self.enabled = False
-            return
-
         if not self._init_redis():
             self.enabled = False
             return
 
-        if self.polling_enabled:
-            self.polling_thread = threading.Thread(target=self._poll_updates, name="TelegramPolling", daemon=True)
-            self.polling_thread.start()
-            self._logger.success("Telegram 消息轮询线程已启动")
+        bots_cfg = self.telegram_config.get("bots")
+        if isinstance(bots_cfg, list) and bots_cfg:
+            self._is_multi_bot = True
+            if not self._init_multi_bots(bots_cfg):
+                self.enabled = False
+                return
         else:
-            self._logger.warning("polling=false，跳过消息轮询")
+            token = self.telegram_config.get("token", "").strip()
+            if not token:
+                self._logger.error("未配置 Telegram token，无法启动适配器")
+                self.enabled = False
+                return
+            self.token = token
+            if not self._initialize_bot_with_retry():
+                self.enabled = False
+                return
+            # 单 bot 兼容模式：创建默认 _BotState
+            state = _BotState(
+                name="default",
+                client=self.bot,
+                wxid=self.wxid,
+                nickname=self.nickname,
+                alias=self.alias,
+                polling_enabled=self.polling_enabled,
+                webhook_enabled=self.webhook_enabled,
+            )
+            self._bots["default"] = state
+            if self.polling_enabled:
+                t = threading.Thread(target=self._poll_updates, args=(state,), name="TGPoll-default", daemon=True)
+                state.polling_thread = t
+                t.start()
+                self._logger.success("Telegram 消息轮询线程已启动")
+            else:
+                self._logger.warning("polling=false，跳过消息轮询")
 
         self.reply_thread = threading.Thread(target=self._reply_loop, name="TGReply", daemon=True)
         self.reply_thread.start()
         self._logger.success(f"回复监听线程已启动 queue={self.reply_queue}")
+
+    def _init_multi_bots(self, bots_cfg: list) -> bool:
+        """初始化多个 bot 实例"""
+        initialized = 0
+        for idx, bot_cfg in enumerate(bots_cfg):
+            if not isinstance(bot_cfg, dict):
+                self._logger.warning(f"bots[{idx}] 配置格式无效，跳过")
+                continue
+            name = str(bot_cfg.get("name") or f"bot{idx}").strip() or f"bot{idx}"
+            token = str(bot_cfg.get("token") or "").strip()
+            if not token:
+                self._logger.warning(f"bot '{name}' 未配置 token，跳过")
+                continue
+            proxy_host = str(bot_cfg.get("proxyHost") or self.proxy_host).strip()
+            http_proxy = str(bot_cfg.get("httpProxy") or self.http_proxy).strip()
+            bot_polling = bool(bot_cfg.get("polling", self.polling_enabled))
+            custom_headers = bot_cfg.get("customHeaders")
+            if not isinstance(custom_headers, dict):
+                custom_headers = self.custom_headers
+            client: Optional[TelegramBotClient] = None
+            try:
+                client = TelegramBotClient(token, proxy_host, http_proxy, self._logger, custom_headers)
+                me = client.get_me()
+                wxid = f"telegram_bot_{me['id']}"
+                nickname = (me.get("first_name") or me.get("username") or "TelegramBot").strip()
+                alias = me.get("username") or ""
+                # 删除 webhook（多 bot 模式仅支持轮询）
+                try:
+                    client.delete_webhook(False)
+                except Exception:
+                    pass
+                state = _BotState(
+                    name=name,
+                    client=client,
+                    wxid=wxid,
+                    nickname=nickname,
+                    alias=alias,
+                    polling_enabled=bot_polling,
+                    webhook_enabled=False,
+                )
+                self._bots[name] = state
+                if initialized == 0:
+                    self.bot = client
+                    self.wxid = wxid
+                    self.nickname = nickname
+                    self.alias = alias
+                    self.token = token
+                initialized += 1
+                self._logger.success(f"Bot @{alias or nickname} ({name}) 初始化完成")
+            except Exception as exc:
+                self._logger.error(f"Bot '{name}' 初始化失败: {exc}")
+                if client:
+                    client.close()
+
+        if initialized == 0:
+            self._logger.error("所有 bot 初始化失败，无法启动适配器")
+            return False
+
+        # 启动每个 bot 的轮询线程
+        for state in self._bots.values():
+            if state.polling_enabled:
+                t = threading.Thread(target=self._poll_updates, args=(state,), name=f"TGPoll-{state.name}", daemon=True)
+                state.polling_thread = t
+                t.start()
+                self._logger.success(f"Bot '{state.name}' 轮询线程已启动")
+
+        self._logger.success(f"多 Bot 模式：共初始化 {initialized}/{len(bots_cfg)} 个 bot")
+        return True
 
     def run(self) -> None:
         if not self.enabled:
@@ -613,25 +733,77 @@ class TelegramAdapter:
         return TelegramWebhookHandler
 
     # ---------------------------- 轮询与消息转换 ----------------------------
-    def _poll_updates(self):
-        if not self.bot:
+    def _poll_updates(self, bot_state: Optional[_BotState] = None):
+        bs = bot_state or self._get_default_bot()
+        if not bs or not bs.client:
             return
         offset = None
-        self._logger.info("开始轮询 Telegram 更新")
+        self._logger.info(f"开始轮询 Telegram 更新 (bot={bs.name})")
         while not self.stop_event.is_set():
             try:
-                updates = self.bot.get_updates(offset=offset, timeout=self.polling_timeout)
+                updates = bs.client.get_updates(offset=offset, timeout=self.polling_timeout)
                 if not isinstance(updates, list):
                     continue
                 for update in updates:
                     offset = update.get("update_id", 0) + 1
-                    self._handle_update(update)
+                    self._handle_update(update, bs)
             except Exception as exc:
-                self._logger.error(f"轮询异常 - {exc}")
+                self._logger.error(f"轮询异常 (bot={bs.name}) - {exc}")
                 time.sleep(self.retry_interval)
 
-    def _handle_update(self, update: Dict[str, Any]):
-        if not self.redis_conn:
+    def _get_default_bot(self) -> Optional[_BotState]:
+        if self._bots:
+            return next(iter(self._bots.values()))
+        return None
+
+    def _find_bot_by_name(self, name: str) -> Optional[_BotState]:
+        return self._bots.get(name)
+
+    def _find_bot_by_wxid(self, wxid: str) -> Optional[_BotState]:
+        """根据 wxid 前缀查找对应的 bot_state"""
+        for state in self._bots.values():
+            if state.wxid == wxid:
+                return state
+        return self._get_default_bot()
+
+    def _resolve_bot_client(self, wxid: str, bot: Optional[TelegramBotClient] = None) -> TelegramBotClient:
+        if bot:
+            return bot
+        bot_name, _ = self._parse_wxid(wxid)
+        if bot_name:
+            state = self._find_bot_by_name(bot_name)
+            if state and state.client:
+                return state.client
+        state = self._get_default_bot()
+        if state and state.client:
+            return state.client
+        if self.bot:
+            return self.bot
+        raise RuntimeError("Telegram Bot 未初始化")
+
+    def _parse_wxid(self, wxid: str) -> Tuple[Optional[str], int]:
+        """解析 wxid 返回 (bot_name, chat_id)。
+
+        多 bot 格式: telegram-{bot_name}-{chat_id}[/@chatroom]
+        单 bot 格式: telegram-{chat_id}[/@chatroom]
+        """
+        if not wxid:
+            raise ValueError("wxid 不能为空")
+        clean = wxid
+        if clean.endswith("@chatroom"):
+            clean = clean[:-9]
+        if clean.startswith("telegram-"):
+            clean = clean[len("telegram-"):]
+        # 多 bot 解析使用已知 bot 名称前缀，避免负数群 chat_id 被错误切分。
+        for bot_name in sorted(self._bots.keys(), key=len, reverse=True):
+            prefix = f"{bot_name}-"
+            if clean.startswith(prefix):
+                return bot_name, int(clean[len(prefix):])
+        return None, int(clean)
+
+    def _handle_update(self, update: Dict[str, Any], bot_state: Optional[_BotState] = None):
+        bs = bot_state or self._get_default_bot()
+        if not bs or not self.redis_conn:
             self._logger.error("Redis 未初始化，无法处理消息")
             return
 
@@ -645,19 +817,20 @@ class TelegramAdapter:
         if chat_id is None:
             return
         chat_type = chat.get("type", "private")
-        if self._is_duplicate_message(chat_id, message.get("message_id")):
+        if self._is_duplicate_message(chat_id, message.get("message_id"), bs):
             self._logger.debug(f"检测到重复消息 chat={chat_id} msg={message.get('message_id')}，自动忽略")
             return
-        session_id = self._build_session_id(chat_id, chat_type)
+        bot_name = bs.name if self._is_multi_bot else ""
+        session_id = self._build_session_id(chat_id, chat_type, bot_name)
         sender_id = self._build_sender_id(from_user)
         msg_id = self._generate_msg_id(chat_id, message.get("message_id", 0))
         timestamp = int(message.get("date", time.time()))
         msg_type, placeholder = self._resolve_msg_type(message)
-        resource_path = self._extract_media_path(message)
+        resource_path = self._extract_media_path(message, bs.client)
         original_text = self._extract_message_text(message, placeholder)
         is_quote = self._is_quote_message(message)
         if is_quote:
-            quote_xml = self._build_quote_xml(message, session_id, original_text, resource_path)
+            quote_xml = self._build_quote_xml(message, session_id, original_text, resource_path, bs.client)
             msg_text = quote_xml or original_text
             if quote_xml:
                 msg_type = 49
@@ -668,8 +841,8 @@ class TelegramAdapter:
             "MsgId": msg_id,
             "FromUserName": {"string": session_id},
             "FromWxid": session_id,
-            "ToWxid": self.wxid,
-            "ToUserName": {"string": self.wxid},
+            "ToWxid": bs.wxid,
+            "ToUserName": {"string": bs.wxid},
             "MsgType": msg_type,
             "Status": 3,
             "ImgStatus": 1,
@@ -721,13 +894,24 @@ class TelegramAdapter:
                 platform = payload.get("platform")
                 if platform not in ("telegram", "tg", None):
                     continue
-                self._handle_reply_payload(payload)
+                # 多 bot 模式：根据 wxid 路由到正确的 bot
+                wxid = payload.get("wxid") or payload.get("channel_id") or ""
+                bs = self._get_default_bot()
+                if self._is_multi_bot and wxid:
+                    bot_name, _ = self._parse_wxid(wxid)
+                    if bot_name:
+                        found = self._find_bot_by_name(bot_name)
+                        if found:
+                            bs = found
+                self._handle_reply_payload(payload, bs)
             except Exception as exc:
                 self._logger.error(f"回复处理异常: {exc}")
 
-    def _handle_reply_payload(self, payload: Dict[str, Any]):
-        if not self.bot:
+    def _handle_reply_payload(self, payload: Dict[str, Any], bot_state: Optional[_BotState] = None):
+        bs = bot_state or self._get_default_bot()
+        if not bs or not bs.client:
             return
+        bot_client = bs.client
         msg_type = payload.get("msg_type")
         wxid = payload.get("wxid") or payload.get("channel_id")
         content = payload.get("content", {})
@@ -738,24 +922,24 @@ class TelegramAdapter:
             ats = content.get("at") or []
             if ats:
                 text = f"{' '.join(ats)} {text}".strip()
-            self._send_with_retry(self._send_text_sync, wxid, text, content.get("parse_mode"))
+            self._send_with_retry(self._send_text_sync, wxid, text, content.get("parse_mode"), bot=bot_client)
         elif msg_type == "markdown":
-            self._send_with_retry(self._send_text_sync, wxid, content.get("text", ""), "Markdown")
+            self._send_with_retry(self._send_text_sync, wxid, content.get("text", ""), "Markdown", bot=bot_client)
         elif msg_type == "html":
-            self._send_with_retry(self._send_text_sync, wxid, content.get("text", ""), "HTML")
+            self._send_with_retry(self._send_text_sync, wxid, content.get("text", ""), "HTML", bot=bot_client)
         elif msg_type == "image":
             self._log_media_summary("image", content.get("media"))
             media, filename = self._materialize_media(content.get("media"))
             caption = content.get("caption", "")
-            self._send_with_retry(self._send_image_sync, wxid, media, caption, filename)
+            self._send_with_retry(self._send_image_sync, wxid, media, caption, filename, bot=bot_client)
         elif msg_type == "video":
             self._log_media_summary("video", content.get("media"))
             media, filename = self._materialize_media(content.get("media"))
-            self._send_with_retry(self._send_video_sync, wxid, media, content.get("caption", ""), filename)
+            self._send_with_retry(self._send_video_sync, wxid, media, content.get("caption", ""), filename, bot=bot_client)
         elif msg_type == "voice":
             self._log_media_summary("voice", content.get("media"))
             media, filename = self._materialize_media(content.get("media"))
-            self._send_with_retry(self._send_voice_sync, wxid, media, filename)
+            self._send_with_retry(self._send_voice_sync, wxid, media, filename, bot=bot_client)
         elif msg_type == "audio":
             self._log_media_summary("audio", content.get("media"))
             media, filename = self._materialize_media(content.get("media"))
@@ -766,13 +950,14 @@ class TelegramAdapter:
                 content.get("title"),
                 content.get("performer"),
                 filename,
+                bot=bot_client,
             )
         elif msg_type == "link":
             link_text = content.get("title") or content.get("url") or ""
             description = content.get("description", "")
             url = content.get("url", "")
             message = "\n".join(filter(None, [link_text, url, description]))
-            self._send_with_retry(self._send_text_sync, wxid, message)
+            self._send_with_retry(self._send_text_sync, wxid, message, bot=bot_client)
         else:
             self._logger.debug(f"未处理的消息类型: {msg_type}")
 
@@ -888,7 +1073,8 @@ class TelegramAdapter:
             raise last_error
 
     # ---------------------------- 发送接口 ----------------------------
-    def _send_text_sync(self, wxid: str, content: str, parse_mode: Optional[str] = None) -> tuple:
+    def _send_text_sync(self, wxid: str, content: str, parse_mode: Optional[str] = None, bot: Optional[TelegramBotClient] = None) -> tuple:
+        client = self._resolve_bot_client(wxid, bot)
         chat_id = self._parse_chat_id(wxid)
         text = (content or "").strip()
         if not text:
@@ -897,12 +1083,20 @@ class TelegramAdapter:
         payload = {"chat_id": chat_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
-        message = self.bot.send_message(payload)
+        message = client.send_message(payload)
         ts = message.get("date", int(time.time()))
         msg_id = message.get("message_id")
         return msg_id, ts, msg_id
 
-    def _send_image_sync(self, wxid: str, image: MediaInput, caption: str = "", filename: Optional[str] = None) -> dict:
+    def _send_image_sync(
+        self,
+        wxid: str,
+        image: MediaInput,
+        caption: str = "",
+        filename: Optional[str] = None,
+        bot: Optional[TelegramBotClient] = None,
+    ) -> dict:
+        client = self._resolve_bot_client(wxid, bot)
         chat_id = self._parse_chat_id(wxid)
         payload = {"chat_id": chat_id}
         if caption:
@@ -910,14 +1104,22 @@ class TelegramAdapter:
         data_patch, files, closer = self._prepare_media_field("photo", image, "image.jpg", filename)
         payload.update(data_patch)
         try:
-            result = self.bot.send_photo(payload, files)
+            result = client.send_photo(payload, files)
         finally:
             if closer:
                 closer()
         ts = result.get("date", int(time.time()))
         return {"message_id": result.get("message_id"), "date": ts}
 
-    def _send_video_sync(self, wxid: str, video: MediaInput, caption: str = "", filename: Optional[str] = None) -> dict:
+    def _send_video_sync(
+        self,
+        wxid: str,
+        video: MediaInput,
+        caption: str = "",
+        filename: Optional[str] = None,
+        bot: Optional[TelegramBotClient] = None,
+    ) -> dict:
+        client = self._resolve_bot_client(wxid, bot)
         chat_id = self._parse_chat_id(wxid)
         payload = {"chat_id": chat_id}
         if caption:
@@ -925,20 +1127,27 @@ class TelegramAdapter:
         data_patch, files, closer = self._prepare_media_field("video", video, "video.mp4", filename)
         payload.update(data_patch)
         try:
-            result = self.bot.send_video(payload, files)
+            result = client.send_video(payload, files)
         finally:
             if closer:
                 closer()
         ts = result.get("date", int(time.time()))
         return {"message_id": result.get("message_id"), "date": ts}
 
-    def _send_voice_sync(self, wxid: str, voice: MediaInput, filename: Optional[str] = None) -> dict:
+    def _send_voice_sync(
+        self,
+        wxid: str,
+        voice: MediaInput,
+        filename: Optional[str] = None,
+        bot: Optional[TelegramBotClient] = None,
+    ) -> dict:
+        client = self._resolve_bot_client(wxid, bot)
         chat_id = self._parse_chat_id(wxid)
         payload = {"chat_id": chat_id}
         data_patch, files, closer = self._prepare_media_field("voice", voice, "audio.ogg", filename)
         payload.update(data_patch)
         try:
-            result = self.bot.send_voice(payload, files)
+            result = client.send_voice(payload, files)
         finally:
             if closer:
                 closer()
@@ -952,7 +1161,9 @@ class TelegramAdapter:
         title: Optional[str],
         performer: Optional[str],
         filename: Optional[str] = None,
+        bot: Optional[TelegramBotClient] = None,
     ) -> dict:
+        client = self._resolve_bot_client(wxid, bot)
         chat_id = self._parse_chat_id(wxid)
         payload = {"chat_id": chat_id}
         if title:
@@ -962,7 +1173,7 @@ class TelegramAdapter:
         data_patch, files, closer = self._prepare_media_field("audio", audio, "audio.mp3", filename)
         payload.update(data_patch)
         try:
-            result = self.bot.send_audio(payload, files)
+            result = client.send_audio(payload, files)
         finally:
             if closer:
                 closer()
@@ -1041,16 +1252,9 @@ class TelegramAdapter:
         return await loop.run_in_executor(None, lambda: self.bot.delete_message(chat_id, message_id))
 
     # ---------------------------- 工具方法 ----------------------------
-    @staticmethod
-    def _parse_chat_id(wxid: str) -> int:
-        if not wxid:
-            raise ValueError("wxid 不能为空")
-        clean = wxid
-        if clean.endswith("@chatroom"):
-            clean = clean[:-9]
-        if clean.startswith("telegram-"):
-            clean = clean[len("telegram-") :]
-        return int(clean)
+    def _parse_chat_id(self, wxid: str) -> int:
+        _, chat_id = self._parse_wxid(wxid)
+        return chat_id
 
     def _is_quote_message(self, message: Dict[str, Any]) -> bool:
         has_media = bool(
@@ -1062,13 +1266,20 @@ class TelegramAdapter:
         )
         return bool(message.get("reply_to_message") and not has_media)
 
-    def _build_quote_xml(self, message: Dict[str, Any], session_id: str, user_text: str, resource_path: str) -> Optional[str]:
+    def _build_quote_xml(
+        self,
+        message: Dict[str, Any],
+        session_id: str,
+        user_text: str,
+        resource_path: str,
+        bot: Optional[TelegramBotClient] = None,
+    ) -> Optional[str]:
         reply = message.get("reply_to_message")
         if not reply:
             return None
         title = html.escape(user_text or "", quote=False)
         refer_type = self._map_quote_msg_type(reply)
-        refer_content = self._build_quote_content(reply, resource_path)
+        refer_content = self._build_quote_content(reply, resource_path, bot)
         refer_content_xml = self._wrap_cdata(refer_content or "")
         from_user = reply.get("from") or {}
         display_name = html.escape(
@@ -1118,14 +1329,19 @@ class TelegramAdapter:
             return 49
         return 1
 
-    def _build_quote_content(self, reply: Dict[str, Any], resource_path: str) -> str:
+    def _build_quote_content(
+        self,
+        reply: Dict[str, Any],
+        resource_path: str,
+        bot: Optional[TelegramBotClient] = None,
+    ) -> str:
         if reply.get("text"):
             return reply["text"]
         if reply.get("caption"):
             return reply["caption"]
         path = resource_path
         if not path:
-            path = self._extract_media_path(reply)
+            path = self._extract_media_path(reply, bot)
         if path:
             return self._build_image_xml(path)
         return "[引用内容]"
@@ -1148,31 +1364,41 @@ class TelegramAdapter:
             attrs.append(f'md5="{md5_value}"')
         return f"<msg><img {' '.join(attrs)} /></msg>"
 
-    def _extract_media_path(self, message: Dict[str, Any]) -> str:
+    def _extract_media_path(
+        self,
+        message: Dict[str, Any],
+        bot: Optional[TelegramBotClient] = None,
+    ) -> str:
         try:
             if message.get("photo"):
                 best = message["photo"][-1]
-                return self._download_media(best.get("file_id"), ".jpg")
+                return self._download_media(best.get("file_id"), ".jpg", bot)
             if message.get("video"):
-                return self._download_media(message["video"].get("file_id"), ".mp4")
+                return self._download_media(message["video"].get("file_id"), ".mp4", bot)
             if message.get("voice"):
-                return self._download_media(message["voice"].get("file_id"), ".ogg")
+                return self._download_media(message["voice"].get("file_id"), ".ogg", bot)
             if message.get("audio"):
-                return self._download_media(message["audio"].get("file_id"), ".mp3")
+                return self._download_media(message["audio"].get("file_id"), ".mp3", bot)
             if message.get("document"):
                 suffix = Path(message["document"].get("file_name") or "").suffix or ".bin"
-                return self._download_media(message["document"].get("file_id"), suffix)
+                return self._download_media(message["document"].get("file_id"), suffix, bot)
             if message.get("reply_to_message"):
-                return self._extract_media_path(message["reply_to_message"])
+                return self._extract_media_path(message["reply_to_message"], bot)
         except Exception as exc:
             self._logger.error(f"下载媒体文件失败: {exc}")
         return ""
 
-    def _download_media(self, file_id: str, default_ext: str) -> str:
-        if not self.bot or not file_id:
+    def _download_media(
+        self,
+        file_id: str,
+        default_ext: str,
+        bot: Optional[TelegramBotClient] = None,
+    ) -> str:
+        client = bot or self.bot
+        if not client or not file_id:
             return ""
         try:
-            info = self.bot.get_file(file_id)
+            info = client.get_file(file_id)
             file_path = info.get("file_path") or ""
             if not file_path:
                 return ""
@@ -1184,7 +1410,7 @@ class TelegramAdapter:
             target.parent.mkdir(parents=True, exist_ok=True)
             for attempt in range(1, self.download_retries + 1):
                 try:
-                    self.bot.download_file(file_path, target)
+                    client.download_file(file_path, target)
                     md5_value = self._hash_file(target)
                     path_str = str(target)
                     if md5_value:
@@ -1251,8 +1477,11 @@ class TelegramAdapter:
         return f"<![CDATA[{safe}]]>"
 
     @staticmethod
-    def _build_session_id(chat_id: int, chat_type: str) -> str:
-        base = f"telegram-{chat_id}"
+    def _build_session_id(chat_id: int, chat_type: str, bot_name: str = "") -> str:
+        if bot_name:
+            base = f"telegram-{bot_name}-{chat_id}"
+        else:
+            base = f"telegram-{chat_id}"
         if chat_type in {"group", "supergroup"}:
             return f"{base}@chatroom"
         return base
@@ -1346,8 +1575,9 @@ class TelegramAdapter:
     # ---------------------------- 生命周期 ----------------------------
     def stop(self):
         self.stop_event.set()
-        if self.polling_thread and self.polling_thread.is_alive():
-            self.polling_thread.join(timeout=2)
+        for state in self._bots.values():
+            if state.polling_thread and state.polling_thread.is_alive():
+                state.polling_thread.join(timeout=2)
         self._stop_webhook_server()
         if self.reply_thread and self.reply_thread.is_alive():
             self.reply_thread.join(timeout=2)
@@ -1356,21 +1586,31 @@ class TelegramAdapter:
                 self.redis_conn.close()
             except Exception:
                 pass
-        if self.bot:
-            try:
-                self.bot.close()
-            except Exception:
-                pass
+        for state in self._bots.values():
+            state.close()
 
-    def _is_duplicate_message(self, chat_id: int, message_id: Optional[int]) -> bool:
+    def _is_duplicate_message(
+        self,
+        chat_id: int,
+        message_id: Optional[int],
+        bot_state: Optional[_BotState] = None,
+    ) -> bool:
         if self._recent_message_limit <= 0 or message_id is None:
             return False
-        key = f"{chat_id}:{message_id}"
-        if key in self._recent_message_keys:
+        state = bot_state or self._get_default_bot()
+        if state:
+            keys = state.recent_message_keys
+            messages = state.recent_messages
+            key = f"{state.name}:{chat_id}:{message_id}"
+        else:
+            keys = self._recent_message_keys
+            messages = self._recent_messages
+            key = f"{chat_id}:{message_id}"
+        if key in keys:
             return True
-        self._recent_message_keys.add(key)
-        self._recent_messages.append(key)
-        if len(self._recent_messages) > self._recent_message_limit:
-            old = self._recent_messages.popleft()
-            self._recent_message_keys.discard(old)
+        keys.add(key)
+        messages.append(key)
+        if len(messages) > self._recent_message_limit:
+            old = messages.popleft()
+            keys.discard(old)
         return False

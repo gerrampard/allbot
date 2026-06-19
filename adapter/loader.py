@@ -93,11 +93,30 @@ def _is_enabled(config: Dict) -> bool:
     return False
 
 
+def _send_adapter_error_notification(adapter_name: str, error_msg: str) -> None:
+    """发送适配器错误通知（非阻塞）"""
+    try:
+        from utils.notification_service import get_notification_service
+        notification_service = get_notification_service()
+        if notification_service and notification_service.enabled and notification_service.token:
+            import asyncio
+            asyncio.create_task(
+                notification_service.send_error_notification(
+                    f"adapter:{adapter_name}",
+                    f"适配器 {adapter_name} 异常: {error_msg}",
+                )
+            )
+            logger.info(f"已触发适配器 {adapter_name} 错误通知")
+    except Exception as e:
+        logger.warning(f"发送适配器 {adapter_name} 错误通知失败: {e}")
+
+
 def _run_adapter(info: AdapterInfo) -> None:
     try:
         module = importlib.import_module(info.module_name)
     except Exception as exc:
         logger.error(f"适配器 {info.name} 导入模块 {info.module_name} 失败: {exc}")
+        _send_adapter_error_notification(info.name, f"导入模块失败: {exc}")
         return
 
     adapter_cls = getattr(module, info.class_name, None)
@@ -105,12 +124,14 @@ def _run_adapter(info: AdapterInfo) -> None:
         logger.error(
             f"适配器 {info.name} 未在模块 {info.module_name} 中找到 {info.class_name}"
         )
+        _send_adapter_error_notification(info.name, f"未找到类 {info.class_name}")
         return
 
     try:
         adapter_instance = adapter_cls(info.raw_config, info.config_path)
     except Exception as exc:
         logger.error(f"适配器 {info.name} 初始化失败: {exc}")
+        _send_adapter_error_notification(info.name, f"初始化失败: {exc}")
         return
 
     run_method = getattr(adapter_instance, "run", None)
@@ -119,6 +140,7 @@ def _run_adapter(info: AdapterInfo) -> None:
             run_method()
         except Exception as exc:
             logger.error(f"适配器 {info.name} 运行异常: {exc}")
+            _send_adapter_error_notification(info.name, f"运行异常: {exc}")
     else:
         logger.warning(f"适配器 {info.name} 未实现 run() 方法，线程将结束")
 

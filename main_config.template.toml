@@ -79,7 +79,7 @@ robot-wxids = [
     "wxid_xxxxxxxxxxxxx"
 ]
 # GitHub加速服务设置
-# 可选值: "", "https://ghfast.top/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/"
+# 可选值: "", "https://github.akams.cn/", "https://ghfast.top/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/"
 # 空字符串表示直连不使用加速
 # 注意: 如果使用加速服务，请确保以"/"结尾
 github-proxy = ""

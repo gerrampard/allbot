@@ -1,3 +1,9 @@
+"""
+@input: main_config.toml、github.akams.cn 页面 JS 节点源、requests/FastAPI
+@output: GitHub 反代节点查询、检测与写入配置的 API 路由
+@position: 管理后台 GitHub 反代配置层，为插件/框架下载提供代理节点管理
+@auto-doc: Update header and folder INDEX.md when this file changes
+"""
 import shutil
 import time
 from pathlib import Path
@@ -17,7 +23,8 @@ router = APIRouter(prefix="/api/github-proxy", tags=["github-proxy"])
 _check_auth = None
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "main_config.toml"
-_UPSTREAM_NODES_API = "https://api.akams.cn/github"
+_NODE_SOURCE_URL = "https://github.akams.cn/"
+_DEFAULT_PROXY_NODE = "https://github.akams.cn/"
 
 _NODES_CACHE_TTL_SECONDS = 600
 _nodes_cache: Dict[str, Any] = {"ts": 0, "nodes": []}
@@ -106,38 +113,62 @@ def _fetch_nodes_from_upstream() -> List[Dict[str, Any]]:
         if isinstance(nodes, list) and nodes:
             return nodes
 
-    response = requests.get(_UPSTREAM_NODES_API, timeout=8)
-    response.raise_for_status()
-    payload = response.json()
-
-    if payload.get("code") != 200:
-        raise RuntimeError(f"上游返回异常: {payload.get('msg') or payload}")
-
-    data = payload.get("data")
-    if not isinstance(data, list):
-        raise RuntimeError("上游返回数据结构异常")
-
     nodes: List[Dict[str, Any]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        raw_url = (item.get("url") or "").strip()
-        if not raw_url:
-            continue
-        try:
-            proxy_url = _normalize_proxy_url(raw_url)
-        except Exception:
-            continue
-        nodes.append(
-            {
-                "url": proxy_url,
-                "latency": item.get("latency"),
-                "speed": item.get("speed"),
-                "tag": item.get("tag"),
-            }
+    try:
+        # 从 github.akams.cn 页面的 JS bundle 中提取节点列表
+        page_resp = requests.get(_NODE_SOURCE_URL, timeout=10,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+        page_resp.raise_for_status()
+        html = page_resp.text
+
+        # 提取页面中所有 JS chunk URL
+        chunk_paths = re.findall(
+            r'<script[^>]*src="(/_next/static/chunks/[^"]+)"[^>]*>', html
         )
 
-    nodes.sort(key=lambda x: (x.get("latency") is None, x.get("latency") or 10**9))
+        # 遍历 chunk，找到包含节点数据的那个
+        for path in chunk_paths:
+            chunk_url = f"https://github.akams.cn{path}"
+            try:
+                chunk_resp = requests.get(chunk_url, timeout=8,
+                                          headers={"User-Agent": "Mozilla/5.0"})
+                if chunk_resp.status_code == 200 and '{label:"default",value:"' in chunk_resp.text:
+                    raw_nodes = re.findall(
+                        r'\{label:"(default|contribute|survey)",value:"([^"]+)"\}',
+                        chunk_resp.text,
+                    )
+                    for label, domain in raw_nodes:
+                        try:
+                            proxy_url = _normalize_proxy_url(f"https://{domain}/")
+                            tag_map = {"default": "默认", "contribute": "贡献", "survey": "测绘"}
+                            nodes.append({
+                                "url": proxy_url,
+                                "latency": None,
+                                "speed": None,
+                                "tag": tag_map.get(label, label),
+                            })
+                        except Exception:
+                            continue
+                    break
+            except Exception:
+                continue
+
+        if nodes:
+            _nodes_cache["ts"] = now
+            _nodes_cache["nodes"] = nodes
+            return nodes
+    except Exception:
+        pass
+
+    # 兜底：使用默认节点
+    nodes = [
+        {
+            "url": _normalize_proxy_url(_DEFAULT_PROXY_NODE),
+            "latency": None,
+            "speed": None,
+            "tag": "默认",
+        }
+    ]
     _nodes_cache["ts"] = now
     _nodes_cache["nodes"] = nodes
     return nodes

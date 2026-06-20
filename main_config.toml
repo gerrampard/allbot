@@ -19,7 +19,7 @@ redis-password = ""         # Redis密码，如果有设置密码则填写
 redis-db = 0                # Redis数据库编号，默认0
 
 # WebSocket 设置
-enable-websocket = true     # 是否启用 WebSocket 消息接收
+enable-websocket = false     # 是否启用 WebSocket 消息接收
 ws-url = "ws://127.0.0.1:9000/ws/GetSyncMsg"  # 869 建议使用 /ws/GetSyncMsg，部署时按实际环境修改，key 由程序自动追加
 
 # RabbitMQ 设置
@@ -36,9 +36,10 @@ enabled = true             # 是否启用管理后台
 host = "0.0.0.0"           # 管理后台监听地址，使用0.0.0.0允许外部访问
 port = 9090                # 管理后台端口
 username = "admin"         # 管理后台登录用户名
-password = "change_me"     # 管理后台登录密码
+password = "allbot_sxkiss_2026"     # 管理后台登录密码
 debug = true               # 是否开启调试模式
 log_level = "INFO"         # 日志级别，可选值: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+secret-key = "k5_I0SXxWDAYP_PTiT1uJTxbnQayxASJk0bUdGa9DeE"
 
 # 日志系统设置（第二阶段优化）
 [Logging]
@@ -60,7 +61,7 @@ memory_low_threshold_mb = 500 # 可用内存警告阈值（MB）
 # XYBot 核心设置
 [XYBot]
 version = "v2.0.0"                    # 版本号，请勿修改
-enable-wechat-login = true            # 869 需要启用登录以获取 token_key 并更新 wxid/profile
+enable-wechat-login = false            # 869 需要启用登录以获取 token_key 并更新 wxid/profile
 ignore-protection = false             # 是否忽略风控保护机制，建议保持false
 enable-group-wakeup = false
 group-wakeup-words = [
@@ -76,7 +77,7 @@ robot-wxids = [
     "wxid_xxxxxxxxxxxxx"
 ]
 # GitHub加速服务设置
-# 可选值: "", "https://ghfast.top/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/"
+# 可选值: "", "https://github.akams.cn/", "https://ghfast.top/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/"
 # 空字符串表示直连不使用加速
 # 注意: 如果使用加速服务，请确保以"/"结尾
 github-proxy = ""
@@ -89,7 +90,7 @@ keyvalDB-url = "sqlite+aiosqlite:///database/keyval.db"
 # 管理员设置
 admins = ["wxid_admin_1", "wxid_admin_2"]  # 管理员的wxid列表，可从消息日志中获取
 
-disabled-plugins = []   # 禁用的插件列表，不需要的插件名称填在这里
+disabled-plugins = ["GroupMonitorPlugin", "ClawPlugin"]   # 禁用的插件列表，不需要的插件名称填在这里
 
 timezone = "Asia/Shanghai"             # 时区设置，中国用户使用 Asia/Shanghai
 

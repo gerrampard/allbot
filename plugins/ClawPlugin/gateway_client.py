@@ -957,6 +957,7 @@ _OPENCLAW_CHANNEL_ALIASES = {
     "wx-869": "wechat",
     "wx869": "wechat",
     "wechat-869": "wechat",
+    "wechat": "wechat",
 }
 
 _OPENCLAW_DELIVERABLE_CHANNELS = {
@@ -969,4 +970,5 @@ _OPENCLAW_DELIVERABLE_CHANNELS = {
     "signal",
     "imessage",
     "webchat",
+    "wechat",
 }

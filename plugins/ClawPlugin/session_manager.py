@@ -88,9 +88,6 @@ class SessionManager:
             return {}
         channel = self.resolve_openclaw_channel(route)
         params: dict[str, Any] = {}
-        if self.gateway.supports_message_channel(channel):
-            params["channel"] = channel
-            params["replyChannel"] = channel
         if self.gateway_account_id:
             params["accountId"] = self.gateway_account_id
             params["replyAccountId"] = self.gateway_account_id

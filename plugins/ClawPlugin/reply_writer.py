@@ -619,35 +619,14 @@ class ReplyWriter:
         payload_text = self.extract_openclaw_reply_text(payload).strip()
         sent_text = _safe_text(self._pending_run_stream_sent_texts.get(run_id, "")).strip()
         best = self.pick_longest_reply_text(payload_text, pending_text)
-        expected_user_marker = self._extract_expected_history_user_marker(run_id)
-        should_fetch_history = bool(session_key) and (
-            prefer_history or not best or (sent_text and len(best) <= len(sent_text))
-            or (sent_text and best and not best.startswith(sent_text))
-        )
+        # 不需要查 chat.history：pending_text 已有完整文本，deliver=false 导致用户消息不在历史里
+        # 只在 prefer_history 且 best 为空时才查历史
+        should_fetch_history = bool(session_key) and prefer_history and not best
         if should_fetch_history:
             history_text, history_turn_matched = await self.fetch_assistant_reply_via_chat_history(
-                session_key, expected_user_marker=(expected_user_marker if require_current_history_turn else ""),
+                session_key, expected_user_marker="",
             )
-            if require_current_history_turn and expected_user_marker and not history_turn_matched:
-                # chat.history 中没有当前用户消息（deliver=false 导致），但如果有 payload/pending 文本可直接使用
-                if not best:
-                    logger.info("[Claw] chat.history marker不匹配且无pending/payload文本，继续等待 run_id={}", run_id)
-                    return ""
-                logger.info("[Claw] chat.history marker不匹配但已有文本(best_len={})，直接使用，run_id={}", len(best), run_id)
-            else:
-                best = self.pick_longest_reply_text(best, history_text)
-            if not best:
-                await asyncio.sleep(0.6)
-                history_text, history_turn_matched = await self.fetch_assistant_reply_via_chat_history(
-                    session_key, expected_user_marker=(expected_user_marker if require_current_history_turn else ""),
-                )
-                if require_current_history_turn and expected_user_marker and not history_turn_matched:
-                    if not best:
-                        logger.info("[Claw] chat.history 二次查询仍未推进到当前用户消息且无文本，run_id={}", run_id)
-                        return ""
-                    logger.info("[Claw] chat.history 二次查询marker不匹配但已有文本(best_len={})，继续使用，run_id={}", len(best), run_id)
-                else:
-                    best = self.pick_longest_reply_text(best, history_text)
+            best = self.pick_longest_reply_text(best, history_text)
         return best
 
     async def fetch_assistant_reply_via_chat_history(self, session_key: str, *, expected_user_marker: str = "") -> tuple[str, bool]:

@@ -494,7 +494,7 @@ function renderPluginList(pluginsList) {
                             <button class="btn btn-sm btn-outline-secondary rounded-pill btn-readme" data-plugin-id="${plugin.id}">
                                 <i class="bi bi-book me-1"></i>说明
                             </button>
-                            <button class="btn btn-sm btn-outline-primary rounded-pill btn-config" data-plugin-id="${plugin.id}" ${!plugin.enabled ? 'disabled' : ''}>
+                            <button class="btn btn-sm btn-outline-primary rounded-pill btn-config" data-plugin-id="${plugin.id}">
                                 <i class="bi bi-gear-fill me-1"></i>配置
                             </button>
                             ${hasUpdate ? `
@@ -739,6 +739,9 @@ async function togglePlugin(pluginId) {
         showToast(`操作失败: ${error.message}`, 'danger');
     }
 }
+
+// 暴露到 window 供 fix_plugins_display.js 调用
+window.togglePlugin = togglePlugin;
 
 // 打开README模态框
 async function openReadmeModal(pluginId) {
@@ -2233,3 +2236,15 @@ function initUploadModal() {
         console.error('找不到上传插件按钮');
     }
 }
+
+// ═══════════════════════════════════════════
+// 暴露全局函数供 fix_plugins_display.js 调用
+// ═══════════════════════════════════════════
+window.plugins = plugins;
+window.togglePlugin = togglePlugin;
+window.openConfigModal = openConfigModal;
+window.openReadmeModal = openReadmeModal;
+window.confirmDeletePlugin = confirmDeletePlugin;
+window.filterPlugins = filterPlugins;
+window.renderPluginList = renderPluginList;
+window.loadPlugins = loadPlugins;

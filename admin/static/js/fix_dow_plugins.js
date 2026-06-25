@@ -216,7 +216,7 @@
                                     <button class="btn btn-sm btn-outline-secondary rounded-pill btn-readme" data-plugin-id="${plugin.id}">
                                         <i class="bi bi-book me-1"></i>说明
                                     </button>
-                                    <button class="btn btn-sm btn-outline-primary rounded-pill btn-config" data-plugin-id="${plugin.id}" ${!plugin.enabled ? 'disabled' : ''}>
+                                    <button class="btn btn-sm btn-outline-primary rounded-pill btn-config" data-plugin-id="${plugin.id}">
                                         <i class="bi bi-gear-fill me-1"></i>配置
                                     </button>
                                     <button class="btn btn-sm btn-outline-danger rounded-pill btn-delete" data-plugin-id="${plugin.id}">
@@ -534,4 +534,7 @@
             showToast(`操作失败: ${error.message}`, 'danger');
         }
     }
+    
+    // 暴露到 window 供事件绑定调用
+    window.toggleDowPlugin = toggleDowPlugin;
 })();

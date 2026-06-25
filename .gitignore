@@ -68,3 +68,4 @@ plugins/*/
 !plugins/Protocol869Demo
 !plugins/VideoSender
 !plugins/RevokeBotMessage
+!plugins/ClawPlugin

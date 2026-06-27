@@ -115,9 +115,20 @@ class MediaPipeline:
         if base_name:
             return base_name
         md5_value = _safe_text(message.get("ImageMD5")).strip().lower()
+        if not md5_value:
+            extension = mimetypes.guess_extension(mime_type) or ".jpg"
+            stem = _safe_text(message.get("MsgId")).strip() or __import__("uuid").uuid4().hex[:12]
+            return f"{stem}{extension}"
+        # 优先从 files/ 目录查找实际存在的文件名（避免 .jpg/.jpeg 不一致）
+        import glob as _glob
+        roots = [os.getcwd(), "/app"]
+        for root in roots:
+            for match in _glob.glob(os.path.join(root, "files", f"{md5_value}.*")):
+                name = os.path.basename(match)
+                if name.startswith(md5_value):
+                    return name
         extension = mimetypes.guess_extension(mime_type) or ".jpg"
-        stem = md5_value or (_safe_text(message.get("MsgId")).strip() or __import__("uuid").uuid4().hex[:12])
-        return f"{stem}{extension}"
+        return f"{md5_value}{extension}"
 
     def _build_binary_gateway_attachments(self, message: dict, *, media_type: str) -> list[dict[str, Any]]:
         payload = self._extract_binary_attachment_payload(message)
@@ -408,7 +419,7 @@ class MediaPipeline:
         existing = [path for path in candidates if os.path.isfile(path)]
         if not existing:
             return ""
-        existing.sort(key=lambda path: os.path.getsize(path), reverse=True)
+        existing.sort(key=lambda path: os.path.getmtime(path), reverse=True)
         return existing[0]
 
     def _ensure_public_media_file(self, path: str, resolved_name: str) -> str:
@@ -442,13 +453,28 @@ class MediaPipeline:
         if not resolved_name:
             resolved_name = os.path.basename(_safe_text(file_name).strip()) if file_name else ""
         if not resolved_name and md5_value:
-            resolved_name = f"{md5_value}.jpg"
+            resolved_name = self._resolve_media_filename(md5_value)
         if not resolved_name:
             return ""
         self._ensure_public_media_file(path, resolved_name)
         encoded_name = urllib.parse.quote(resolved_name)
         route = self.image_public_route_prefix.rstrip("/") or "/files"
         return f"{base_url}{route}/{encoded_name}"
+
+    def _resolve_media_filename(self, md5_value: str) -> str:
+        """根据 md5 查找实际文件，返回带扩展名的文件名。"""
+        if not md5_value:
+            return ""
+        import glob as _glob
+        roots = [os.getcwd(), "/app"]
+        for root in roots:
+            for match in _glob.glob(os.path.join(root, "files", f"{md5_value}.*")):
+                name = os.path.basename(match)
+                if name.startswith(md5_value):
+                    _, ext = os.path.splitext(name)
+                    if ext:
+                        return f"{md5_value}{ext}"
+        return f"{md5_value}.jpg"
 
     # ── File/Article Meta ────────────────────────────────────
 
@@ -796,7 +822,9 @@ class MediaPipeline:
         except Exception:
             return "", []
         try:
-            root = ET.fromstring(xml_text)
+            import html
+            unescaped = html.unescape(xml_text)
+            root = ET.fromstring(unescaped)
         except Exception:
             return "", []
         img = root.find("img")

@@ -270,6 +270,15 @@ class ClawPlugin(PluginBase):
                 admins = cfg.get("admins")
             if isinstance(admins, list):
                 return {str(item).strip() for item in admins if str(item).strip()}
+            # 兼容 admins 为字符串列表格式（如 "['admin1', 'admin2']"）
+            if isinstance(admins, str):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(admins)
+                    if isinstance(parsed, list):
+                        return {str(item).strip() for item in parsed if str(item).strip()}
+                except Exception:
+                    pass
         return set()
 
     # ── Dedup Helpers ────────────────────────────────────────
@@ -807,7 +816,7 @@ class ClawPlugin(PluginBase):
         return "\n".join(lines).strip()
 
     def _extract_md5_from_img_xml(self, xml_text: str) -> str:
-        return self.th._extract_md5_from_img_xml(xml_text)
+        return self.mp._extract_md5_from_img_xml(xml_text)
 
     def _extract_md5_from_media_xml(self, xml_text: str) -> str:
         raw = _safe_text(xml_text).strip()

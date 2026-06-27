@@ -126,6 +126,15 @@ class TriggerHandler:
                 admins = cfg.get("admins")
             if isinstance(admins, list):
                 return {str(item).strip() for item in admins if str(item).strip()}
+            # 兼容 admins 为字符串列表格式（如 "['admin1', 'admin2']"）
+            if isinstance(admins, str):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(admins)
+                    if isinstance(parsed, list):
+                        return {str(item).strip() for item in parsed if str(item).strip()}
+                except Exception:
+                    pass
         return set()
 
     def _match_admin(self, sender_wxid: str, admin_set: set[str]) -> bool:

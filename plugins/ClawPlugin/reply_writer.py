@@ -264,7 +264,7 @@ class ReplyWriter:
             return
         now = time.time()
         last_sent_at = float(self._pending_run_stream_sent_at.get(run_id) or 0.0)
-        min_flush_chars = 120
+        min_flush_chars = 40
         max_flush_interval_seconds = 2.5
         if len(suffix) < 8 and now - last_sent_at < max_flush_interval_seconds:
             return

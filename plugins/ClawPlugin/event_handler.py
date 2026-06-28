@@ -82,10 +82,9 @@ class EventHandler:
             endSource=_safe_text(source).strip() or "-",
             endPhase=_safe_text(phase).strip() or "-",
         )
-
-    def _schedule_pending_run_finalize(self, run_id: str, route: WatchRoute, *, source: str, delay_seconds: float = 0.35) -> None:
+    def _schedule_pending_run_finalize(self, run_id: str, route: WatchRoute, *, source: str, delay_seconds: float = 1.2) -> None:
         meta = self.plugin._pending_run_meta.get(run_id) or {}
-        if bool(meta.get("finalizeScheduled")):
+        if bool(meta.get("finalizeScheduled")) and not bool(meta.get("finalSent")):
             return
         self.plugin._update_pending_run_meta(
             run_id,
@@ -99,27 +98,50 @@ class EventHandler:
             ),
             name=f"claw-finalize-{run_id}",
         )
-
     async def _finalize_pending_run_after_delay(self, run_id: str, route: WatchRoute, *, source: str, delay_seconds: float = 0.35) -> None:
+        delay_seconds = max(delay_seconds, 1.2)
         try:
-            while True:
+            max_waits = 20
+            waits = 0
+            while waits < max_waits:
+                waits += 1
                 await asyncio.sleep(delay_seconds)
                 if run_id not in self.plugin._pending_run_routes:
                     return
                 meta = self.plugin._pending_run_meta.get(run_id) or {}
                 text = _safe_text(meta.get("lastNonEmptyText") or self.plugin._pending_run_texts.get(run_id, "")).strip()
+                last_text_at = float(meta.get("lastTextAt") or 0.0)
+                if bool(meta.get("finalSent")):
+                    sent_text = _safe_text(self.plugin._pending_run_stream_sent_texts.get(run_id, "")).strip()
+                    if sent_text and text.startswith(sent_text) and len(text) > len(sent_text):
+                        suffix = text[len(sent_text):]
+                        logger.info("[Claw] 延迟收敛补发后缀 run_id={} suffix_chars={} total={} source={}",
+                                    run_id, len(suffix), len(text), source)
+                        await self.plugin._finalize_pending_run_once(run_id, route, text, source=source)
+                    return
                 if not bool(meta.get("endSeen")):
                     logger.debug("[Claw] 延迟收敛取消，尚未看到结束信号 run_id={} source={}", run_id, source)
                     return
                 if not text:
-                    logger.debug("[Claw] 延迟收敛等待文本 run_id={} source={}", run_id, source)
+                    if waits <= 3:
+                        logger.debug("[Claw] 延迟收敛等待文本 run_id={} source={} wait={}", run_id, source, waits)
+                        continue
+                    logger.debug("[Claw] 延迟收敛取消，超时无文本 run_id={} source={}", run_id, source)
+                    return
+                if (time.time() - last_text_at) < 1.8:
+                    logger.debug("[Claw] 延迟收敛继续等待更多文本 run_id={} source={} chars={} lastTextAge={:.1f}s",
+                                run_id, source, len(text), time.time() - last_text_at)
                     continue
-                if not self.plugin.rw.should_finalize_stable_ws_text(run_id):
+                if not self.plugin.rw.should_finalize_stable_ws_text(run_id, now=time.time()):
                     logger.debug("[Claw] 延迟收敛继续等待稳定 run_id={} source={} chars={}", run_id, source, len(text))
                     continue
                 logger.info("[Claw] 延迟收敛终态 run_id={} source={} chars={}", run_id, source, len(text))
                 await self.plugin._finalize_pending_run_once(run_id, route, text, source=source)
                 return
+            logger.info("[Claw] 延迟收敛最大等待轮次已到，强制终态 run_id={} source={} chars={}", run_id, source, len(text or "-"))
+            if text:
+                await self.plugin._finalize_pending_run_once(run_id, route, text, source=source)
+            return
         finally:
             meta = self.plugin._pending_run_meta.get(run_id) or {}
             if not bool(meta.get("finalSent")):
@@ -207,12 +229,8 @@ class EventHandler:
                     meta_after_text = self.plugin._pending_run_meta.get(run_id) or {}
                     if pending and bool(meta_after_text.get("finalSent")):
                         route, _ = pending
-                        self._schedule_pending_run_finalize(
-                            run_id,
-                            route,
-                            source=f"event:{event_name or '-'}:post-final-suffix",
-                            delay_seconds=0.6,
-                        )
+                        # finalSent 后继续文本累计：不用调度，chat 文本会自行累积到 _pending_run_texts
+                        # 后续由延迟收敛/终态循环刷新判断 lastTextAt
             if pending:
                 route, _ = pending
                 if not isinstance(payload, dict):

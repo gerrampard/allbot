@@ -110,9 +110,12 @@ class ReplyWriter:
         chunks = self.split_reply_chunks(content)
         if not chunks:
             return
+        total_chars = len(_safe_text(content).strip())
         chunk_total = len(chunks)
         if chunk_total > 1:
             logger.info("[Claw] 分片发送(to_wxid={}): chunks={}", route.to_wxid, chunk_total)
+        else:
+            logger.info("[Claw] 发送回复(to_wxid={}): chars={}", route.to_wxid, total_chars)
         mentioned = False
         for index, chunk in enumerate(chunks, start=1):
             try:
@@ -200,6 +203,8 @@ class ReplyWriter:
     def extract_stream_text_update(self, event_name: str, payload: dict) -> tuple[str, str]:
         if not isinstance(payload, dict):
             return "", ""
+        # 通用提取：从 payload 中搜索 data.text / message.content 等所有可能路径
+        # 优先走事件类型专用路径
         if event_name == "agent":
             data = payload.get("data")
             if isinstance(data, dict):
@@ -209,7 +214,16 @@ class ReplyWriter:
                 delta_text = _safe_text(data.get("delta")).strip()
                 if delta_text:
                     return "append", delta_text
-        if event_name == "chat":
+            for key in ("text", "delta"):
+                top_level_text = _safe_text(payload.get(key)).strip()
+                if top_level_text:
+                    return ("append" if key == "delta" else "replace"), top_level_text
+            return "", ""
+        if event_name in {"chat", "session.message", "session.operation", "session.tool",
+                          "sessions.messages.subscribe"}:
+            delta_text = _safe_text(payload.get("deltaText") or payload.get("delta_text")).strip()
+            if delta_text:
+                return "append", delta_text
             message = payload.get("message")
             if isinstance(message, dict):
                 role = _safe_text(message.get("role")).strip().lower()
@@ -270,6 +284,7 @@ class ReplyWriter:
             return
         suffix, _ = self.compute_unsent_stream_suffix(run_id, final_text)
         if suffix:
+            logger.info("[Claw] 发送最终回复 run_id={} suffix_chars={} total_chars={}", run_id, len(suffix), len(final_text))
             await self.send_to_route(route, suffix)
         self._pending_run_stream_sent_texts[run_id] = final_text
         self._pending_run_stream_sent_at[run_id] = time.time()
@@ -280,6 +295,65 @@ class ReplyWriter:
         current = self._pending_run_meta.get(run_id) or {}
         current.update(updates)
         self._pending_run_meta[run_id] = current
+
+    def _merge_pending_text(self, previous_text: str, incoming_text: str, update_mode: str) -> str:
+        previous = _safe_text(previous_text).strip()
+        incoming = _safe_text(incoming_text).strip()
+        if not incoming:
+            return previous
+        if update_mode == "append":
+            return f"{previous}{incoming}".strip()
+        if not previous:
+            return incoming
+        if incoming.startswith(previous):
+            return incoming
+        if previous.startswith(incoming):
+            return previous
+        if incoming in previous:
+            return previous
+        if previous in incoming:
+            return incoming
+        if len(incoming) >= len(previous):
+            return incoming
+        return previous
+
+    def _pick_preferred_pending_text(self, chat_text: str, agent_text: str) -> str:
+        chat = _safe_text(chat_text).strip()
+        agent = _safe_text(agent_text).strip()
+        if not chat:
+            return agent
+        if not agent:
+            return chat
+        if chat.startswith(agent) or agent.startswith(chat):
+            return chat if len(chat) >= len(agent) else agent
+        if chat in agent or agent in chat:
+            return chat if len(chat) >= len(agent) else agent
+        if len(chat) >= max(32, int(len(agent) * 0.5)):
+            return chat
+        return agent
+
+    def ingest_pending_run_text(self, run_id: str, event_name: str, update_mode: str, stream_text: str) -> tuple[int, int, str]:
+        meta = self._pending_run_meta.get(run_id) or {}
+        source_key = "chatText" if event_name == "chat" else "agentText"
+        previous_source_text = _safe_text(meta.get(source_key)).strip()
+        merged_source_text = self._merge_pending_text(previous_source_text, stream_text, update_mode)
+        chat_text = merged_source_text if source_key == "chatText" else _safe_text(meta.get("chatText")).strip()
+        agent_text = merged_source_text if source_key == "agentText" else _safe_text(meta.get("agentText")).strip()
+        preferred_text = self._pick_preferred_pending_text(chat_text, agent_text)
+        previous_text = _safe_text(self._pending_run_texts.get(run_id, "")).strip()
+        self._pending_run_texts[run_id] = preferred_text
+        self.update_pending_run_meta(
+            run_id,
+            **{
+                source_key: merged_source_text,
+                "chatText": chat_text,
+                "agentText": agent_text,
+                "lastNonEmptyText": preferred_text or _safe_text(meta.get("lastNonEmptyText")).strip(),
+                "lastTextAt": time.time(),
+                "lastTextSize": len(preferred_text),
+            },
+        )
+        return len(previous_text), len(preferred_text), preferred_text
 
     def clone_json_payload(self, payload: Any) -> Any:
         try:
@@ -294,6 +368,7 @@ class ReplyWriter:
         request_params: Optional[dict] = None, retry_count: int = 0,
     ) -> None:
         self._pending_run_texts.pop(run_id, None)
+        self._pending_run_stream_sent_texts.pop(run_id, None)
         self._pending_run_stream_sent_at.pop(run_id, None)
         expires_at = time.time() + self.pending_run_ttl_seconds
         self._pending_run_routes[run_id] = (route, expires_at)
@@ -303,20 +378,24 @@ class ReplyWriter:
             "retryCount": int(retry_count or 0),
             "acceptedAt": now,
             "lastProgressAt": now,
+            "lastTextAt": 0.0,
+            "lastTextSize": 0,
             "watchdogTriggered": False,
             "finalSent": False,
             "streamFlushCount": 0,
             "finalizerStarted": True,
+            "endSeen": False,
+            "endSeenAt": 0.0,
+            "finalizeScheduled": False,
+            "chatText": "",
+            "agentText": "",
         }
         if session_key:
             self.plugin._remember_session_route(session_key, route)
         if isinstance(request_params, dict):
             meta["requestParams"] = self.clone_json_payload(request_params)
         self._pending_run_meta[run_id] = meta
-        self.plugin._create_task_safe(
-            self.await_pending_run_final(run_id),
-            name=f"claw-run-finalizer:{run_id[:8]}",
-        )
+        # 不再创建 agent.wait 兜底任务——纯依赖 WS 事件回推
 
     async def await_pending_run_final(self, run_id: str) -> None:
         await asyncio.sleep(0)
@@ -441,12 +520,18 @@ class ReplyWriter:
             if run_id not in self._pending_run_routes:
                 return False
             meta = self._pending_run_meta.get(run_id) or {}
-            if bool(meta.get("finalSent")):
-                return False
-            self.update_pending_run_meta(run_id, finalSent=True, finalSentAt=time.time(), finalSentBy=_safe_text(source).strip() or "-")
+            already_sent = bool(meta.get("finalSent"))
+            now = time.time()
+            self.update_pending_run_meta(
+                run_id,
+                finalSent=True,
+                finalSentAt=now,
+                finalSentBy=_safe_text(source).strip() or "-",
+                finalText=text,
+                finalTextSize=len(text),
+            )
             await self.send_final_reply_without_duplicate(run_id, route, text)
-            self._clear_pending_run(run_id)
-            return True
+            return not already_sent
 
     def _get_pending_run_finalize_lock(self, run_id: str) -> asyncio.Lock:
         lock = self._pending_run_finalize_locks.get(run_id)
@@ -576,14 +661,11 @@ class ReplyWriter:
             if isinstance(node, dict):
                 role = _safe_text(node.get("role")).strip().lower()
                 is_assistant_message = bool(role) and role in assistant_roles
-                if not role or is_assistant_message:
+                if is_assistant_message or from_message:
                     for key in ("text", "delta"):
                         if key in node:
                             add(node.get(key))
-                if role and role not in assistant_roles:
-                    message_context = False
-                else:
-                    message_context = bool(from_message) or is_assistant_message
+                message_context = bool(from_message) or is_assistant_message
                 content = node.get("content")
                 if content is not None:
                     walk(content, depth + 1, from_message=message_context)
@@ -615,10 +697,15 @@ class ReplyWriter:
         self, run_id: str, payload: Any, session_key: str,
         *, prefer_history: bool = False, require_current_history_turn: bool = False,
     ) -> str:
+        meta = self._pending_run_meta.get(run_id) or {}
+        chat_text = _safe_text(meta.get("chatText")).strip()
+        agent_text = _safe_text(meta.get("agentText")).strip()
         pending_text = _safe_text(self._pending_run_texts.get(run_id, "")).strip()
         payload_text = self.extract_openclaw_reply_text(payload).strip()
-        sent_text = _safe_text(self._pending_run_stream_sent_texts.get(run_id, "")).strip()
-        best = self.pick_longest_reply_text(payload_text, pending_text)
+        if chat_text:
+            best = self.pick_longest_reply_text(chat_text, pending_text)
+        else:
+            best = self.pick_longest_reply_text(pending_text, payload_text, agent_text)
         # 不需要查 chat.history：pending_text 已有完整文本，deliver=false 导致用户消息不在历史里
         # 只在 prefer_history 且 best 为空时才查历史
         should_fetch_history = bool(session_key) and prefer_history and not best
@@ -910,9 +997,21 @@ class ReplyWriter:
                     phase = _safe_text(data.get("phase")).strip().lower()
                     if phase in {"end", "done", "completed", "complete", "stop", "stopped", "failed", "error"}:
                         return True
-        if event_name == "chat":
+            phase = _safe_text(payload.get("phase")).strip().lower()
+            if phase in {"end", "done", "completed", "complete", "stop", "stopped", "failed", "error"}:
+                return True
+            finish_reason = _safe_text(payload.get("finishReason") or payload.get("finish_reason") or payload.get("stopReason") or payload.get("stop_reason")).strip().lower()
+            if finish_reason in {"end", "done", "completed", "complete", "stop", "stopped", "failed", "error", "max_tokens"}:
+                return True
+            data = payload.get("data")
+            if isinstance(data, dict):
+                finish_reason = _safe_text(data.get("finishReason") or data.get("finish_reason") or data.get("stopReason") or data.get("stop_reason")).strip().lower()
+                if finish_reason in {"end", "done", "completed", "complete", "stop", "stopped", "failed", "error", "max_tokens"}:
+                    return True
+        if event_name in {"chat", "session.message", "session.operation", "session.tool",
+                          "sessions.messages.subscribe"}:
             state = _safe_text(payload.get("state")).strip().lower()
-            if state in {"final", "done", "completed", "complete", "failed", "error"}:
+            if state in {"final", "done", "completed", "complete", "failed", "error", "end"}:
                 return True
         return False
 
@@ -938,9 +1037,13 @@ class ReplyWriter:
             return
         now = time.time()
         stalled: list[tuple[str, WatchRoute, str]] = []
+        ready_to_finalize: list[tuple[str, WatchRoute, str]] = []
         for run_id, (route, _expires_at) in list(self._pending_run_routes.items()):
             meta = self._pending_run_meta.get(run_id) or {}
             if not meta:
+                continue
+            if bool(meta.get("endSeen")) and self.should_finalize_stable_ws_text(run_id, now=now):
+                ready_to_finalize.append((run_id, route, "watchdog:end-seen+stable"))
                 continue
             if bool(meta.get("watchdogTriggered")):
                 continue
@@ -952,6 +1055,15 @@ class ReplyWriter:
             if stalled_for < float(self.pending_run_watchdog_seconds):
                 continue
             stalled.append((run_id, route, f"stalled_for={int(stalled_for)}s"))
+        for run_id, route, reason in ready_to_finalize:
+            meta = self._pending_run_meta.get(run_id) or {}
+            text = _safe_text(meta.get("lastNonEmptyText") or self._pending_run_texts.get(run_id, "")).strip()
+            if not text:
+                continue
+            logger.info("[Claw] watchdog 收敛终态 run_id={} reason={} chars={}", run_id, reason, len(text))
+            sent = await self.finalize_pending_run_once(run_id, route, text, source=reason)
+            if sent or run_id not in self._pending_run_routes:
+                continue
         for run_id, route, detail in stalled:
             logger.warning("[Claw] pending run watchdog 触发但未取到终态 run_id={} {}", run_id, detail)
             self.update_pending_run_meta(run_id, watchdogTriggered=True)
@@ -963,6 +1075,34 @@ class ReplyWriter:
         expired = [run_id for run_id, (_, expires_at) in self._pending_run_routes.items() if expires_at <= now]
         for run_id in expired:
             self.clear_pending_run(run_id)
+
+    def should_finalize_stable_ws_text(self, run_id: str, *, now: Optional[float] = None) -> bool:
+        if run_id not in self._pending_run_routes:
+            return False
+        meta = self._pending_run_meta.get(run_id) or {}
+        text = _safe_text(meta.get("lastNonEmptyText") or self._pending_run_texts.get(run_id, "")).strip()
+        if not text:
+            return False
+        if bool(meta.get("finalSent")):
+            return False
+        if not bool(meta.get("endSeen")):
+            return False
+        accepted_at = float(meta.get("acceptedAt") or 0.0)
+        last_progress_at = float(meta.get("lastProgressAt") or 0.0)
+        last_text_at = float(meta.get("lastTextAt") or 0.0)
+        end_seen_at = float(meta.get("endSeenAt") or 0.0)
+        current_now = float(now or time.time())
+        text_age = current_now - max(last_text_at, accepted_at)
+        idle_age = current_now - max(last_progress_at, accepted_at)
+        end_age = current_now - max(end_seen_at, accepted_at)
+        # 纯 WS 收敛：已看到结束类信号，且文本与进度都稳定了一个短窗口
+        if text_age < 0.6:
+            return False
+        if idle_age < 0.6:
+            return False
+        if end_age < 0.3:
+            return False
+        return True
 
     async def _maybe_finalize_run_via_chat_history(
         self, run_id: str, route: WatchRoute, session_key: str, *, reason: str, min_chars: int = 1,

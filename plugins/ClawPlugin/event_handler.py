@@ -39,6 +39,92 @@ class EventHandler:
         self.event_forward_to_wxids = plugin.event_forward_to_wxids
         self.event_mention_in_group = plugin.event_mention_in_group
 
+    def _find_run_id_by_session_key(self, event_name: str, payload: Any, frame: dict) -> str:
+        """当 event 没有 runId 时，尝试通过 sessionKey 反向查找匹配的 pending run_id。
+
+        OpenClaw 在 deliver=false + trigger-expect-final=false 场景下，
+        AG 回复以 session.message 事件推送，该事件不含 runId，但含有 sessionKey。
+        """
+        if event_name not in {"session.message", "session.operation", "session.tool"}:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        session_key = _safe_text(payload.get("sessionKey")).strip()
+        if not session_key:
+            return ""
+        self.plugin._cleanup_pending_run_routes()
+        matched_run_id = ""
+        matched_rank = (-1, 0.0)
+        for run_id, (_, _) in list(self.plugin._pending_run_routes.items()):
+            meta = self.plugin._pending_run_meta.get(run_id) or {}
+            pending_session_key = _safe_text(meta.get("sessionKey")).strip()
+            if not pending_session_key or pending_session_key != session_key:
+                continue
+            rank = (
+                0 if bool(meta.get("finalSent")) else 1,
+                float(meta.get("acceptedAt") or 0.0),
+            )
+            if rank > matched_rank:
+                matched_rank = rank
+                matched_run_id = run_id
+        if matched_run_id:
+            logger.info("[Claw] 通过 sessionKey {} 匹配到 run_id={}", session_key, matched_run_id)
+            return matched_run_id
+        logger.debug("[Claw] sessionKey {} 未匹配到任何 pending run", session_key)
+        return ""
+
+    def _mark_run_end_seen(self, run_id: str, phase: str, *, source: str) -> None:
+        now = time.time()
+        self.plugin._update_pending_run_meta(
+            run_id,
+            endSeen=True,
+            endSeenAt=now,
+            endSource=_safe_text(source).strip() or "-",
+            endPhase=_safe_text(phase).strip() or "-",
+        )
+
+    def _schedule_pending_run_finalize(self, run_id: str, route: WatchRoute, *, source: str, delay_seconds: float = 0.35) -> None:
+        meta = self.plugin._pending_run_meta.get(run_id) or {}
+        if bool(meta.get("finalizeScheduled")):
+            return
+        self.plugin._update_pending_run_meta(
+            run_id,
+            finalizeScheduled=True,
+            finalizeScheduledAt=time.time(),
+            finalizeScheduledBy=_safe_text(source).strip() or "-",
+        )
+        self.plugin._create_task_safe(
+            self._finalize_pending_run_after_delay(
+                run_id, route, source=source, delay_seconds=delay_seconds,
+            ),
+            name=f"claw-finalize-{run_id}",
+        )
+
+    async def _finalize_pending_run_after_delay(self, run_id: str, route: WatchRoute, *, source: str, delay_seconds: float = 0.35) -> None:
+        try:
+            while True:
+                await asyncio.sleep(delay_seconds)
+                if run_id not in self.plugin._pending_run_routes:
+                    return
+                meta = self.plugin._pending_run_meta.get(run_id) or {}
+                text = _safe_text(meta.get("lastNonEmptyText") or self.plugin._pending_run_texts.get(run_id, "")).strip()
+                if not bool(meta.get("endSeen")):
+                    logger.debug("[Claw] 延迟收敛取消，尚未看到结束信号 run_id={} source={}", run_id, source)
+                    return
+                if not text:
+                    logger.debug("[Claw] 延迟收敛等待文本 run_id={} source={}", run_id, source)
+                    continue
+                if not self.plugin.rw.should_finalize_stable_ws_text(run_id):
+                    logger.debug("[Claw] 延迟收敛继续等待稳定 run_id={} source={} chars={}", run_id, source, len(text))
+                    continue
+                logger.info("[Claw] 延迟收敛终态 run_id={} source={} chars={}", run_id, source, len(text))
+                await self.plugin._finalize_pending_run_once(run_id, route, text, source=source)
+                return
+        finally:
+            meta = self.plugin._pending_run_meta.get(run_id) or {}
+            if not bool(meta.get("finalSent")):
+                self.plugin._update_pending_run_meta(run_id, finalizeScheduled=False)
+
     async def on_gateway_event(self, frame: dict):
         if not isinstance(frame, dict):
             return
@@ -46,6 +132,12 @@ class EventHandler:
         event_name = _safe_text(frame.get("event") or frame.get("name") or frame.get("method")).strip()
         payload = frame.get("payload", {})
         run_id = self.plugin._extract_run_id_from_event(frame)
+
+        # session.message 等事件不含 runId，尝试通过 sessionKey 反向匹配
+        if not run_id:
+            fallback_run_id = self._find_run_id_by_session_key(event_name, payload, frame)
+            if fallback_run_id:
+                run_id = fallback_run_id
 
         logger.info("[Claw] 事件处理: event={} run_id={}", event_name, run_id or "-")
 
@@ -62,14 +154,6 @@ class EventHandler:
                           "plugin.approval.requested", "plugin.approval.resolved"}:
             logger.debug("[Claw] {} 事件已接收", event_name)
             return
-        if event_name in {"session.message", "session.operation", "session.tool"}:
-            logger.info("[Claw] 会话事件: event=%s run_id=%s payload_keys=%s", event_name, run_id or "-", list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
-            if run_id:
-                self.plugin._cleanup_pending_run_routes()
-                pending = self.plugin._pending_run_routes.get(run_id)
-                if pending:
-                    self.plugin._update_pending_run_meta(run_id, lastProgressAt=time.time(), watchdogTriggered=False)
-            return
         if event_name == "shutdown":
             logger.warning("[Claw] 收到网关 shutdown 事件")
             return
@@ -80,21 +164,55 @@ class EventHandler:
             logger.debug("[Claw] cron 事件已接收")
             return
 
+        # --- 所有 WS 事件统一处理：只要带了 run_id 且在 pending 中，就尝试提取文本/终态收敛 ---
         if run_id:
+            # run_id 不在 pending 中时忽略此事件（非本插件发起的请求）
             self.plugin._cleanup_pending_run_routes()
             pending = self.plugin._pending_run_routes.get(run_id)
             if pending:
                 self.plugin._update_pending_run_meta(run_id, lastProgressAt=time.time(), watchdogTriggered=False)
             if isinstance(payload, dict):
                 update_mode, stream_text = self.plugin._extract_stream_text_update(event_name, payload)
+                if event_name == "agent" and not stream_text:
+                    data = payload.get("data") if isinstance(payload, dict) else None
+                    data_phase = _safe_text(data.get("phase") if isinstance(data, dict) else "").strip()
+                    is_tool_or_lifecycle = bool(data_phase) and data_phase not in ("text", "delta", "content")
+                    log_level = "--" if is_tool_or_lifecycle else "INFO"
+                    logger.info(
+                        "[Claw] agent 事件未提取到文本 run_id={} payload_keys={} data_keys={} phase={}",
+                        run_id,
+                        list(payload.keys()) if isinstance(payload, dict) else "-",
+                        list(data.keys()) if isinstance(data, dict) else "-",
+                        data_phase or "-",
+                    )
+                if event_name == "chat" and not stream_text:
+                    logger.info(
+                        "[Claw] chat 事件未提取到文本 run_id={} payload_keys={} message_keys={} state={} deltaTextChars={}",
+                        run_id,
+                        list(payload.keys()),
+                        list(payload.get("message", {}).keys()) if isinstance(payload.get("message"), dict) else "-",
+                        _safe_text(payload.get("state")).strip() or "-",
+                        len(_safe_text(payload.get("deltaText"))),
+                    )
                 if stream_text:
-                    if update_mode == "append":
-                        self.plugin._pending_run_texts[run_id] = f"{self.plugin._pending_run_texts.get(run_id, '')}{stream_text}".strip()
-                    else:
-                        self.plugin._pending_run_texts[run_id] = stream_text
+                    full_text_len, new_text_len, current_text = self.plugin.rw.ingest_pending_run_text(
+                        run_id, event_name, update_mode, stream_text,
+                    )
+                    if new_text_len != full_text_len:
+                        logger.info("[Claw] 累积文本增长 run_id={} event={} prev={} now={}",
+                                    run_id, event_name, full_text_len, new_text_len)
                     if pending and self.stream_reply_enable:
                         route, _ = pending
                         await self.plugin._maybe_send_stream_update_to_route(run_id, route)
+                    meta_after_text = self.plugin._pending_run_meta.get(run_id) or {}
+                    if pending and bool(meta_after_text.get("finalSent")):
+                        route, _ = pending
+                        self._schedule_pending_run_finalize(
+                            run_id,
+                            route,
+                            source=f"event:{event_name or '-'}:post-final-suffix",
+                            delay_seconds=0.6,
+                        )
             if pending:
                 route, _ = pending
                 if not isinstance(payload, dict):
@@ -102,11 +220,35 @@ class EventHandler:
                 media_sent = await self._maybe_send_gateway_media(run_id, route, payload)
                 meta = self.plugin._pending_run_meta.get(run_id) or {}
                 session_key = _safe_text(meta.get("sessionKey")).strip()
-                if not self.plugin._is_run_completion_event(event_name, payload):
+                is_completion_event = self.plugin._is_run_completion_event(event_name, payload)
+                if not is_completion_event:
+                    # 非完成事件：累积文本后继续等待 WS 推送
+                    pending_text = self.plugin._pending_run_texts.get(run_id, "").strip()
+                    stable_text = _safe_text(meta.get("lastNonEmptyText")).strip()
+                    agent_data = payload.get("data") if isinstance(payload, dict) else None
+                    agent_phase = _safe_text(agent_data.get("phase") if isinstance(agent_data, dict) else "").strip().lower()
+                    final_text = pending_text or stable_text
+                    if event_name == "agent" and agent_phase in {"finishing", "end", "done", "completed", "complete", "stop", "stopped"}:
+                        self._mark_run_end_seen(run_id, agent_phase, source=f"event:{event_name or '-'}")
+                    if event_name == "agent" and agent_phase in {"finishing", "end", "done", "completed", "complete", "stop", "stopped"}:
+                        logger.info(
+                            "[Claw] agent 生命周期结束，等待 WS 稳定后收敛 run_id={} phase={} chars={}",
+                            run_id, agent_phase, len(final_text),
+                        )
+                        if final_text:
+                            self.plugin._update_pending_run_meta(run_id, lastNonEmptyText=final_text)
+                        self._schedule_pending_run_finalize(
+                            run_id, route, source=f"event:{event_name or '-'}:phase-{agent_phase}:delayed",
+                        )
+                        return
+                    if pending_text:
+                        logger.debug("[Claw] 非完成事件已有累积文本 run_id={} event={} chars={}", run_id, event_name, len(pending_text))
                     return
+                logger.info("[Claw] 识别到完成事件 run_id={} event={} payload_keys={}",
+                            run_id, event_name, list(payload.keys()) if isinstance(payload, dict) else "-")
                 reply_text = await self.plugin._resolve_best_final_reply_text(
                     run_id, payload, session_key,
-                    prefer_history=bool(session_key), require_current_history_turn=bool(session_key),
+                    prefer_history=False, require_current_history_turn=False,
                 )
                 pending_text = self.plugin._pending_run_texts.get(run_id, "").strip()
                 reply_failure_kind = self.plugin._classify_model_failure_text(reply_text) if reply_text else ""
@@ -133,9 +275,10 @@ class EventHandler:
                     self.plugin._clear_pending_run(run_id)
                     return
 
-                if event_name == "agent" and session_key and not reply_text:
-                    logger.debug("[Claw] agent 完成事件已收到但无文本，等待 agent.wait 兜底(run_id={})", run_id)
-                    return
+                completion_text = reply_text or pending_text
+                if completion_text:
+                    self.plugin._update_pending_run_meta(run_id, lastNonEmptyText=completion_text)
+                self._mark_run_end_seen(run_id, event_name, source=f"completion:{event_name or '-'}")
 
                 if reply_text:
                     failure_kind = reply_failure_kind
@@ -154,41 +297,35 @@ class EventHandler:
                         logger.warning("[Claw] 终态返回模型失败文本且自动重试失败 run_id={} kind={}", run_id, failure_kind)
                         self.plugin._clear_pending_run(run_id)
                         return
-                    await self.plugin._finalize_pending_run_once(run_id, route, reply_text, source=f"event:{event_name or '-'}")
+                    self._schedule_pending_run_finalize(
+                        run_id, route, source=f"event:{event_name or '-'}:completion-text",
+                    )
                     return
 
-                if event_name == "chat" and not media_sent:
-                    if session_key:
-                        finalized = await self.plugin._maybe_finalize_run_via_chat_history(
-                            run_id, route, session_key, reason="chat-empty-complete",
-                            min_chars=max(1, len(pending_text)),
-                        )
-                        if finalized:
-                            return
-                        logger.info("[Claw] chat 完成事件无文本，等待 agent.wait/chat.history 兜底 run_id={}", run_id)
-                        return
-                    error_text = self.plugin._extract_openclaw_error_text(payload) or "empty response"
-                    error_kind = self.plugin._classify_run_error(error_text, payload)
-                    if error_kind == "unknown":
-                        error_kind = "empty_model"
-                    handled = await self.plugin._retry_pending_run_via_gateway(run_id, route, error_text, error_kind=error_kind)
-                    if handled:
-                        return
-                    logger.warning("[Claw] chat 完成无文本且重试失败 run_id={} error={}", run_id, error_text)
-                    self.plugin._clear_pending_run(run_id)
+                # --- 所有完成事件但无 reply_text：检查 _pending_run_texts 累积文本 ---
+                if pending_text and not reply_text:
+                    logger.info("[Claw] 完成事件无 payload 文本，等待 WS 稳定后使用累积文本 run_id={} event={} chars={}",
+                                run_id, event_name, len(pending_text))
+                    self._schedule_pending_run_finalize(
+                        run_id, route, source=f"event:{event_name or '-'}:pending-text",
+                    )
                     return
 
-                if event_name == "chat":
-                    logger.info("[Claw] chat 完成事件无文本，结束等待(run_id={})", run_id)
-                    self.plugin._clear_pending_run(run_id)
+                self._schedule_pending_run_finalize(
+                    run_id, route, source=f"event:{event_name or '-'}:empty-completion",
+                )
+
+                # 完成事件但既无 payload 文本也无累积文本 —— 等待 watchdog/后续 WS
+                if not reply_text and not pending_text:
+                    logger.warning("[Claw] 完成事件暂未取到文本 run_id={} event={} payload_keys={}",
+                                   run_id, event_name, list(payload.keys()) if isinstance(payload, dict) else "-")
                     return
 
-                if session_key:
-                    logger.debug("[Claw] 非 chat 终态事件无文本，继续等待实时事件(run_id={})", run_id)
-                    return
-
-                self.plugin._clear_pending_run(run_id)
+                # 完成事件已转入统一延迟收敛
                 return
+
+            # run_id 不存在于 pending 中：不是本插件发起的请求，忽略
+            return
 
         # 原始网关事件体只允许转发到显式配置的固定目标
         if not self.event_forward_enable or not self.event_forward_to_wxids:

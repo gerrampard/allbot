@@ -554,12 +554,31 @@ class TriggerHandler:
         self._cleanup_pending_run_routes()
         existing_run_id = self._find_pending_run_id_for_route(route)
         if existing_run_id:
-            logger.warning(
-                "[Claw] 当前会话已有 pending run，跳过本次触发 route_id={} run_id={}",
-                route.route_id,
-                existing_run_id,
-            )
-            return bool(self.propagate_to_other_plugins)
+            meta = self._pending_run_meta.get(existing_run_id) or {}
+            final_sent = bool(meta.get("finalSent"))
+            now = time.time()
+            accepted_at = float(meta.get("acceptedAt") or 0.0)
+            last_progress_at = float(meta.get("lastProgressAt") or 0.0)
+            end_seen = bool(meta.get("endSeen"))
+            stalled_for = now - max(last_progress_at, accepted_at)
+            watchdog_seconds = max(int(self.pending_run_watchdog_seconds or 60), 10)
+            if final_sent or end_seen or stalled_for >= watchdog_seconds:
+                logger.warning(
+                    "[Claw] 旧 pending run 已结束/卡死，释放会话并放行新触发 route_id={} old_run_id={} finalSent={} endSeen={} stalledFor={}s",
+                    route.route_id,
+                    existing_run_id,
+                    final_sent,
+                    end_seen,
+                    int(stalled_for),
+                )
+                self._clear_pending_run(existing_run_id)
+            else:
+                logger.warning(
+                    "[Claw] 当前会话已有 pending run，跳过本次触发 route_id={} run_id={}",
+                    route.route_id,
+                    existing_run_id,
+                )
+                return bool(self.propagate_to_other_plugins)
 
         self._create_task_safe(
             self._trigger_forward_in_background(

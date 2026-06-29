@@ -69,3 +69,4 @@ plugins/*/
 !plugins/VideoSender
 !plugins/RevokeBotMessage
 !plugins/ClawPlugin
+!plugins/VideoDemand

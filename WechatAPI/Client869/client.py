@@ -143,6 +143,7 @@ def _pick_first(mapping: Dict[str, Any], keys: Iterable[str], default: Any = Non
 def _looks_like_base64(content: str) -> bool:
     if not content or len(content) % 4 != 0:
         return False
+    return True
 
 
 def _normalize_proxy_value(proxy: Any) -> str:

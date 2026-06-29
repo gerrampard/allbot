@@ -70,3 +70,4 @@ plugins/*/
 !plugins/RevokeBotMessage
 !plugins/ClawPlugin
 !plugins/VideoDemand
+!plugins/RandomPhoto
